@@ -568,8 +568,8 @@ int tcp_request_serve(const char *ip, uint16_t port, request_handler_f handler)
 {
     tcp_dispatcher_context_t context = {
         .handler = handler,
-        .buffer = malloc(32),
-        .capacity = 32,
+        .buffer = malloc(4096),
+        .capacity = 4096,
         .count = 0
     };
     if (context.buffer == NULL) {
@@ -587,8 +587,8 @@ int tcp_json_request_serve(const char *ip, uint16_t port, json_request_handler_f
 {
     tcp_json_dispatcher_context_t context = {
         .handler = handler,
-        .buffer = malloc(32),
-        .capacity = 32,
+        .buffer = malloc(4096),
+        .capacity = 4096,
         .count = 0
     };
     if (context.buffer == NULL) {
