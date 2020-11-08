@@ -13,6 +13,7 @@
 #include "opal/servers.h"
 #include "opal/threadpool.h"
 #include "opal/poller.h"
+#include "opal/debug.h"
 
 // Types
 typedef union generic_addr_u {
@@ -21,60 +22,32 @@ typedef union generic_addr_u {
     struct sockaddr_in6 sin6;
 } generic_addr_u;
 
-typedef struct thread_worker_args_t {
-    connection_handler_f handler;
+
+typedef struct json_request_context_t {
+    // Poll fields
     int         fd;
     char        *ip;
     uint16_t    port;
-} thread_worker_args_t;
+    int         events;
 
-typedef struct thread_pool_server_context_t {
-    connection_handler_f handler;
-    thread_pool_t pool;
-} thread_pool_server_context_t;
-
-typedef struct tcp_request_dispatcher_context_t {
-    request_handler_f handler;
+    // IO Fields
+    uint8_t     *buffer;
+    size_t      count;
+    size_t      capacity;
     
-    uint8_t *buffer;
-    size_t count;
-    size_t capacity;
-    
-    size_t read_size;
-} tcp_dispatcher_context_t;
-
-typedef struct tcp_json_dispatcher_context_t {
-    json_request_handler_f handler;
-
-    uint8_t *buffer;
-    size_t count;
-    size_t capacity;
-    
-    size_t excess_count;
-    uint8_t *excess_buffer;
-    size_t excess_capacity;
-} tcp_json_dispatcher_context_t;
-
-typedef struct poll_context_t {
-    int         fd;
-    char        *ip;
-    uint16_t    port;
-} poll_context_t;
-
-typedef void (*raw_handler_f)(void *context, int fd, const char *remote_address, uint16_t remote_port);
-
-/** @return An event mask comprised of EPOLLIN, EPOLLOUT, both, or 0 to close the connection. */
-typedef int (*poll_handler_f)(void *context, int events, int fd, const char *remote_address, uint16_t remote_port);
+    uint8_t     *excess_buffer;
+    size_t      excess_count;
+    size_t      excess_capacity;
+} json_request_context_t;
 
 
 // Function prototypes
-static int thread_starter(connection_handler_f handler, int fd, const char *ip, uint16_t port);
-static void *thread_worker(thread_worker_args_t *args);
-static int raw_serve(const char *ip, uint16_t port, raw_handler_f handler, void *context);
-static int poll_serve(const char *ip, uint16_t port, poll_handler_f handler, void *context);
-static int tcp_request_dispatcher(tcp_dispatcher_context_t *context, int events, int fd, const char *remote_address, uint16_t remote_port);
-static int tcp_json_request_dispatcher(tcp_json_dispatcher_context_t *context, int events, int fd, const char *remote_address, uint16_t remote_port);
+static int bind_server_socket(const char *ip, uint16_t port, int *server_fd, generic_addr_u *server_addr, socklen_t *server_addr_len);
+static int json_request_dispatcher(json_request_context_t *ctx, json_request_handler_f handler);
 static size_t json_object_length(const char *data, size_t bytes);
+static json_request_context_t *json_request_context_new(int fd, const char *ip, uint16_t port);
+static void json_request_context_delete(json_request_context_t *ctx);
+
 
 
 /* Static Functions */
@@ -85,7 +58,7 @@ static size_t json_object_length(const char *data, size_t bytes)
         data++;
         bytes--;
     }
-    // Short circuit if the data cannot be an qobject.
+    // Short circuit if the data cannot be an object.
     if (bytes < 2 || *data != '{') return 0;
 
     // Keep track of braces, waiting for the brace count to reach zero.
@@ -96,7 +69,7 @@ static size_t json_object_length(const char *data, size_t bytes)
         
         // If the braces are matched at this point, return the length of the object up to here.
         if (depth == 0) {
-            return i;
+            return i + 1;
         }
     }
 
@@ -105,149 +78,74 @@ static size_t json_object_length(const char *data, size_t bytes)
 }
 
 
-static int tcp_request_dispatcher(tcp_dispatcher_context_t *context, int events, int fd, const char *remote_address, uint16_t remote_port)
-{
-    // Initial connection
-    if (events == 0) {
-        goto CALL_HANDLER;
-    }
-    // Ready to read
-    else if (events & EPOLLIN) {
-        // Resize buffer if necessary
-        if (context->count + context->read_size > context->capacity) {
-            // Find new capacity
-            do {
-                context->capacity *= 2;
-            } while (context->count + context->read_size > context->capacity);
-            // Reallocate the buffer
-            uint8_t *buffer = realloc(context->buffer, context->capacity);
-            if (buffer == NULL)
-            {
-                return 0;
-            }
-            context->buffer = buffer;
-        }
-        // Read as many bytes as are available, up to the number of bytes wanted
-        ssize_t bytes = read(fd, context->buffer + context->count, context->read_size);
-        if (bytes <= 0) {
-            return 0;
-        }
-        context->count += (size_t)bytes;
-        goto CALL_HANDLER;
-    }
-    // Ready to write
-    else if (events & EPOLLOUT) {
-        // Write as many bytes as possible out of the reply
-        ssize_t bytes = write(fd, context->buffer + context->count, context->capacity - context->count);
-        if (bytes <= 0) {
-            return 0;
-        }
-        context->count += (size_t) bytes;
-        // If the reply is finished being sent, call the handler
-        if (context->count == context->capacity) {
-            context->count = 0;
-            goto CALL_HANDLER;
-        }
-        else {
-            return EPOLLOUT;
-        }
-    }
-    // Error condition on socket
-    else {
-        return 0;
-    }
-
-CALL_HANDLER:
-    {
-        uint8_t *reply = NULL;
-        size_t reply_size = 0;
-        int read_size = context->handler(context->buffer, context->count, &reply, &reply_size, remote_address, remote_port);
-        // If the handler is ready to write, set EPOLLOUT
-        if (read_size = 0) {
-            free(context->buffer);
-            context->buffer = reply;
-            context->capacity = reply_size;
-            context->count = 0;
-            return EPOLLOUT;
-        }
-        // If an error has occured, close the connection
-        else if (read_size < 0) {
-            return 0;
-        }
-        // Otherwise, set read size and EPOLLIN
-        else {
-            context->read_size = read_size;
-            return EPOLLIN;
-        }
-    }
-}
-
-
-static int tcp_json_request_dispatcher(tcp_json_dispatcher_context_t *context, int events, int fd, const char *remote_address, uint16_t remote_port)
+static int json_request_dispatcher(json_request_context_t *ctx, json_request_handler_f handler)
 {
     cJSON *request, *reply;
 
     // Initial connection
-    if (events == 0) {
+    if (ctx->events == 0) {
         return EPOLLIN;
     }
     // Ready to read
-    else if (events & EPOLLIN) {
+    else if (ctx->events & EPOLLIN) {
         // Resize buffer if necessary
-        if (context->count + 4096 > context->capacity) {
+        if (ctx->count + 4096 > ctx->capacity) {
             // Find new capacity
             do {
-                context->capacity *= 2;
-            } while (context->count + 4096 > context->capacity);
+                ctx->capacity *= 2;
+            } while (ctx->count + 4096 > ctx->capacity);
             // Reallocate the buffer
-            uint8_t *buffer = realloc(context->buffer, context->capacity);
+            uint8_t *buffer = realloc(ctx->buffer, ctx->capacity);
             if (buffer == NULL)
             {
+                opal_puts("out of memory");
                 return 0;
             }
-            context->buffer = buffer;
+            ctx->buffer = buffer;
         }
         // Read as many bytes as are available, up to 4096
-        ssize_t bytes = read(fd, context->buffer + context->count, 4096);
+        ssize_t bytes = read(ctx->fd, ctx->buffer + ctx->count, 4096);
         if (bytes <= 0) {
+            opal_puts("read failed");
             return 0;
         }
-        context->count += (size_t)bytes;
+        ctx->count += (size_t)bytes;
 
     CHECK_FOR_REQUESTS:
         // If the data cannot possibly be valid, close the connection
-        if (context->count > 0 && context->buffer[0] != '{') {
+        if (ctx->count > 0 && ctx->buffer[0] != '{') {
             return 0;
         }
         
         // If the data in the buffer forms at least one complete JSON object, call the handler.
-        size_t offset = json_object_length((char *)context->buffer, context->count);
+        size_t offset = json_object_length((char *)ctx->buffer, ctx->count);
         if (offset > 0) {
             // Create request and reply objects
-            request = cJSON_ParseWithLength(context->buffer, offset);
+            request = cJSON_ParseWithLength(ctx->buffer, offset);
             if (request == NULL) {
                 return 0;
             }
             reply = cJSON_CreateObject();
             if (reply == NULL) {
+                opal_puts("out of memory");
                 cJSON_Delete(request);
                 return 0;
             }
             // Call handler
-            if (!context->handler(request, reply, remote_address, remote_port)) {
+            if (!handler(request, reply, ctx->ip, ctx->port)) {
                 cJSON_Delete(request);
                 cJSON_Delete(reply);
                 return 0;
             }
             // Save excess bytes
-            context->excess_buffer = context->buffer;
-            context->excess_capacity = context->capacity;
-            context->excess_count = context->count - offset;
-            memmove(context->excess_buffer, context->excess_buffer + offset, context->excess_count);
+            ctx->excess_buffer = ctx->buffer;
+            ctx->excess_capacity = ctx->capacity;
+            ctx->excess_count = ctx->count - offset;
+            memmove(ctx->excess_buffer, ctx->excess_buffer + offset, ctx->excess_count);
             // Serialize reply to buffer
-            context->buffer = (uint8_t *)cJSON_Print(reply);
-            context->capacity = strlen((char *)context->buffer);
-            context->count = 0;
+            ctx->buffer = (uint8_t *)cJSON_Print(reply);
+            ctx->capacity = strlen((char *)ctx->buffer);
+            ctx->count = 0;
             // Cleanup JSON objects
             cJSON_Delete(request);
             cJSON_Delete(reply);
@@ -260,19 +158,23 @@ static int tcp_json_request_dispatcher(tcp_json_dispatcher_context_t *context, i
         }
     }
     // Ready to write
-    else if (events & EPOLLOUT) {
+    else if (ctx->events & EPOLLOUT) {
         // Write as many bytes as possible out of the reply
-        ssize_t bytes = write(fd, context->buffer + context->count, context->capacity - context->count);
+        ssize_t bytes = write(ctx->fd, ctx->buffer + ctx->count, ctx->capacity - ctx->count);
         if (bytes <= 0) {
+            opal_puts("write failed");
             return 0;
         }
-        context->count += (size_t) bytes;
+        ctx->count += (size_t) bytes;
         // If the reply is finished being sent, check for requests
-        if (context->count == context->capacity) {
-            free(context->buffer);
-            context->buffer = context->excess_buffer;
-            context->count = context->excess_count;
-            context->excess_capacity = context->excess_capacity;
+        if (ctx->count == ctx->capacity) {
+            free(ctx->buffer);
+            ctx->buffer = ctx->excess_buffer;
+            ctx->count = ctx->excess_count;
+            ctx->capacity = ctx->excess_capacity;
+            ctx->excess_buffer = NULL;
+            ctx->excess_capacity = 0;
+            ctx->excess_count = 0;
             goto CHECK_FOR_REQUESTS;
         }
         // Otherwise, continue waiting for an opportunity to send
@@ -282,63 +184,11 @@ static int tcp_json_request_dispatcher(tcp_json_dispatcher_context_t *context, i
     }
     // Error condition on socket
     else {
+        opal_puts("error condition on socket");
         return 0;
     }
 }
 
-
-static int thread_pool_assigner(thread_pool_server_context_t *context, int fd, const char *ip, uint16_t port)
-{
-    thread_worker_args_t *args = malloc(sizeof(thread_worker_args_t));
-    if (args == NULL) {
-        return MEMORY_ERROR;
-    }
-
-    args->handler = context->handler;
-    args->fd = fd;
-    args->ip = strdup(ip);
-    args->port = port;
-
-    if (!thread_pool_put_job(&context->pool, (void *(*)(void *))thread_worker, args)) {
-        return MEMORY_ERROR;
-    }
-}
-
-static int thread_starter(connection_handler_f handler, int fd, const char *ip, uint16_t port)
-{
-    thread_worker_args_t *args = malloc(sizeof(thread_worker_args_t));
-    if (args == NULL) {
-        return MEMORY_ERROR;
-    }
-
-    args->handler = handler;
-    args->fd = fd;
-    args->ip = strdup(ip);
-    args->port = port;
-
-    pthread_t thread_id;
-    if (pthread_create(&thread_id, NULL, (void *(*) (void *))thread_worker, args) != 0)
-    {
-        free(args);
-        return THREAD_ERROR;
-    }
-    pthread_detach(thread_id);
-
-    return SERVE_SUCCESS;
-}
-
-static void *thread_worker(thread_worker_args_t *args)
-{
-    // Run handler
-    args->handler(args->fd, args->ip, args->port);
-
-    // Cleanup
-    shutdown(args->fd, SHUT_RDWR);
-    close(args->fd);
-    free(args->ip);
-    free(args);
-    return NULL;
-}
 
 static int bind_server_socket(const char *ip, uint16_t port, int *server_fd, generic_addr_u *server_addr, socklen_t *server_addr_len)
 {
@@ -375,6 +225,7 @@ BIND:
     if (bind(*server_fd, (struct sockaddr *)server_addr, *server_addr_len) != 0)
     {
         close(*server_fd);
+        opal_printf("failed to bind to %s:%u", ip, port);
         return BIND_ERROR;
     }
     listen(*server_fd, 8);
@@ -383,62 +234,40 @@ BIND:
 }
 
 
-static int raw_serve(const char *ip, uint16_t port, raw_handler_f handler, void *context)
+static json_request_context_t *json_request_context_new(int fd, const char *ip, uint16_t port)
 {
-    // Bind socket
-    int server_fd;
-    generic_addr_u server_addr;
-    socklen_t server_addr_len;
-
-    int status = bind_server_socket(ip, port, &server_fd, &server_addr, &server_addr_len);
-    if (status != SERVE_SUCCESS)
-    {
-        return status;
-    }
-
-    // Handle connections
-    while (true)
-    {
-        // Get connection
-        generic_addr_u connection_addr;
-        socklen_t connection_addr_len = server_addr_len;
-        int connection_fd = accept(server_fd, (struct sockaddr*)&connection_addr, &connection_addr_len);
-        if (connection_fd == -1)
-        {
-            return ACCEPT_ERROR;
-        }
-
-        // Convert address to string
-        char connection_addr_string[INET6_ADDRSTRLEN];
-        uint16_t connection_port;
-        if (server_addr.sa.sa_family == AF_INET)
-        {
-            inet_ntop(AF_INET, &connection_addr.sin.sin_addr, connection_addr_string, INET_ADDRSTRLEN);
-            connection_port = ntohs(connection_addr.sin.sin_port);
-        }
-        else if (server_addr.sa.sa_family == AF_INET6)
-        {
-            inet_ntop(AF_INET6, &connection_addr.sin6.sin6_addr, connection_addr_string, INET6_ADDRSTRLEN);
-            connection_port = ntohs(connection_addr.sin6.sin6_port);
-        }
-        else
-        {
-            close(connection_fd);
-            close(server_fd);
-            return INVALID_IP_ERROR;
-        }
-
-        // Run handler
-        handler(context, connection_fd, connection_addr_string, connection_port);
-    }
-
-    // Unreachable
-    close(server_fd);
-    return SERVE_SUCCESS;
+    json_request_context_t *ctx = malloc(sizeof(json_request_context_t));
+    ctx->fd = fd;
+    ctx->ip = strdup(ip);
+    ctx->port = port;
+    ctx->events = 0;
+    ctx->buffer = malloc(4096);
+    ctx->capacity = 4096;
+    ctx->count = 0;
+    ctx->excess_buffer = NULL;
+    ctx->excess_capacity = 0;
+    ctx->excess_count = 0;
+    return ctx;
 }
 
 
-static int poll_serve(const char *ip, uint16_t port, poll_handler_f handler, void *context)
+static void json_request_context_delete(json_request_context_t *ctx)
+{
+    free(ctx->ip);
+    if (ctx->buffer != NULL) {
+        free(ctx->buffer);
+    }
+    if (ctx->excess_buffer != NULL) {
+        free(ctx->excess_buffer);
+    }
+    shutdown(ctx->fd, SHUT_RDWR);
+    close(ctx->fd);
+    free(ctx);
+}
+
+
+/* Public Functions */
+int json_request_server(const char *ip, uint16_t port, json_request_handler_f handler)
 {
     // Bind socket
     int server_fd;
@@ -452,7 +281,7 @@ static int poll_serve(const char *ip, uint16_t port, poll_handler_f handler, voi
     }
 
     // Set up poller
-    poll_context_t listen_context = {
+    json_request_context_t listen_context = {
         .fd = server_fd
     };
     poller_t poller;
@@ -461,23 +290,27 @@ static int poll_serve(const char *ip, uint16_t port, poll_handler_f handler, voi
 
     // Poll
     while (true) {
-        poll_context_t *ctx;
+        json_request_context_t *poll_ctx;
         int events;
-        if (!poller_wait_ctx(&poller, (void **)&ctx, &events, -1)) {
+        opal_puts("Polling ...");
+        if (!poller_wait_ctx(&poller, (void **)&poll_ctx, &events, -1)) {
             break;
         }
+        poll_ctx->events = events;
 
-        if (ctx->fd == server_fd) {
-            // Listening socket
+        // Server socket
+        if (poll_ctx->fd == server_fd) {
             if (events & EPOLLIN == 0) {
                 return POLL_ERROR;
             }
+
             // Get connection
             generic_addr_u connection_addr;
             socklen_t connection_addr_len = server_addr_len;
             int connection_fd = accept(server_fd, (struct sockaddr*)&connection_addr, &connection_addr_len);
             if (connection_fd == -1)
             {
+                opal_puts("failed to accept");
                 return ACCEPT_ERROR;
             }
 
@@ -501,33 +334,30 @@ static int poll_serve(const char *ip, uint16_t port, poll_handler_f handler, voi
                 return INVALID_IP_ERROR;
             }
 
-            // Call the handler
-            int event_mask = handler(context, 0, connection_fd, connection_addr_string, connection_port);
+            // Create a poll context
+            json_request_context_t *new_ctx = json_request_context_new(connection_fd, connection_addr_string, connection_port);
+
+            // Call the dispatcher
+            int event_mask = json_request_dispatcher(new_ctx, handler);
             if (event_mask == 0) {
-                shutdown(connection_fd, SHUT_RDWR);
-                close(connection_fd);
+                json_request_context_delete(new_ctx);
                 continue;
             }
 
-            // If the handler returned a valid mask, add it to the poller
-            poll_context_t *connection_ctx = malloc(sizeof(poll_context_t));
-            connection_ctx->fd = connection_fd;
-            connection_ctx->ip = strdup(connection_addr_string);
-            connection_ctx->port = connection_port;
-            poller_add_ctx(&poller, connection_fd, event_mask, connection_ctx);
+            // If the dispatcher returned a valid mask, add it to the poller
+            poller_add_ctx(&poller, connection_fd, event_mask, new_ctx);
+            opal_printf("New connection from %s:%u", new_ctx->ip, new_ctx->port);
         }
         else {
-            // If events pop for a connected socket, call the handler
-            int event_mask = handler(context, events, ctx->fd, ctx->ip, ctx->port);
+            // If events pop for a connected socket, call the dispatcher
+            int event_mask = json_request_dispatcher(poll_ctx, handler);
             if (event_mask == 0) {
-                shutdown(ctx->fd, SHUT_RDWR);
-                close(ctx->fd);
-                poller_remove(&poller, ctx->fd);
-                free(ctx->ip);
-                free(ctx);
+                poller_remove(&poller, poll_ctx->fd);
+                opal_printf("Connection closed from %s:%u", poll_ctx->ip, poll_ctx->port);
+                json_request_context_delete(poll_ctx);
             }
             else {
-                poller_modify_ctx(&poller, ctx->fd, event_mask, ctx);
+                poller_modify_ctx(&poller, poll_ctx->fd, event_mask, poll_ctx);
             }
         }
     }
@@ -536,67 +366,4 @@ static int poll_serve(const char *ip, uint16_t port, poll_handler_f handler, voi
     poller_fini(&poller);
     close(server_fd);
     return POLL_ERROR;
-}
-
-
-/* Public Functions */
-
-int tcp_threaded_serve(const char *ip, uint16_t port, connection_handler_f handler)
-{
-    return raw_serve(ip, port, (raw_handler_f)thread_starter, (void*)handler);
-}
-
-int tcp_thread_pool_serve(const char *ip, uint16_t port, connection_handler_f handler, int worker_count)
-{
-    // Create context
-    thread_pool_server_context_t context;
-    context.handler = handler;
-    if (!thread_pool_init(&context.pool, worker_count)) {
-        return THREAD_ERROR;
-    }
-
-    // Serve clients
-    int status = raw_serve(ip, port, (raw_handler_f)thread_pool_assigner, &context);
-
-    // Cleanup
-    thread_pool_fini(&context.pool);
-    return status;
-}
-
-
-int tcp_request_serve(const char *ip, uint16_t port, request_handler_f handler)
-{
-    tcp_dispatcher_context_t context = {
-        .handler = handler,
-        .buffer = malloc(4096),
-        .capacity = 4096,
-        .count = 0
-    };
-    if (context.buffer == NULL) {
-        return MEMORY_ERROR;
-    }
-
-    int status = poll_serve(ip, port, (poll_handler_f)tcp_request_dispatcher, &context);
-
-    free(context.buffer);
-    return status;
-}
-
-
-int tcp_json_request_serve(const char *ip, uint16_t port, json_request_handler_f handler)
-{
-    tcp_json_dispatcher_context_t context = {
-        .handler = handler,
-        .buffer = malloc(4096),
-        .capacity = 4096,
-        .count = 0
-    };
-    if (context.buffer == NULL) {
-        return MEMORY_ERROR;
-    }
-
-    int status = poll_serve(ip, port, (poll_handler_f)tcp_json_request_dispatcher, &context);
-
-    free(context.buffer);
-    return status;
 }
