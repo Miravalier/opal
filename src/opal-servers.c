@@ -10,9 +10,9 @@
 #include <sys/types.h>
 #include <pthread.h>
 
-#include "server.h"
-#include "threadpool.h"
-#include "epoll_interface.h"
+#include "opal/servers.h"
+#include "opal/threadpool.h"
+#include "opal/poller.h"
 
 // Types
 typedef union generic_addr_u {

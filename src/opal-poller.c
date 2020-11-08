@@ -1,5 +1,5 @@
 #include <unistd.h>
-#include "epoll_interface.h"
+#include "opal/poller.h"
 
 
 bool poller_init(poller_t *poller)

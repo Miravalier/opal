@@ -1,5 +1,5 @@
-#ifndef _EPOLL_INTERFACE_H
-#define _EPOLL_INTERFACE_H
+#ifndef _OPAL_POLLER_H
+#define _OPAL_POLLER_H
 
 #include <sys/epoll.h>
 #include <stdbool.h>

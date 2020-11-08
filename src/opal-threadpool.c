@@ -1,5 +1,5 @@
 #include <stdlib.h>
-#include <threadpool.h>
+#include "opal/threadpool.h"
 
 // Static functions
 static void *thread_pool_worker(thread_pool_t *pool)

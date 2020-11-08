@@ -1,5 +1,5 @@
-#ifndef _SERVER_H
-#define _SERVER_H
+#ifndef _OPAL_SERVERS_H
+#define _OPAL_SERVERS_H
 
 // Includes required for the below types and functions
 #include <stdint.h>
