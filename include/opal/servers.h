@@ -2,6 +2,7 @@
 #define _OPAL_SERVERS_H
 
 // Includes required for the below types and functions
+#include <stdbool.h>
 #include <stdint.h>
 #include <cjson/cJSON.h>
 
