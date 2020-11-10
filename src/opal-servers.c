@@ -44,40 +44,12 @@ typedef struct json_request_context_t {
 // Function prototypes
 static int bind_server_socket(const char *ip, uint16_t port, int *server_fd, generic_addr_u *server_addr, socklen_t *server_addr_len);
 static int json_request_dispatcher(json_request_context_t *ctx, json_request_handler_f handler);
-static size_t json_object_length(const char *data, size_t bytes);
 static json_request_context_t *json_request_context_new(int fd, const char *ip, uint16_t port);
 static void json_request_context_delete(json_request_context_t *ctx);
 
 
 
 /* Static Functions */
-static size_t json_object_length(const char *data, size_t bytes)
-{
-    // Skip prefixed whitespace
-    while (bytes > 0 && isspace(*data)) {
-        data++;
-        bytes--;
-    }
-    // Short circuit if the data cannot be an object.
-    if (bytes < 2 || *data != '{') return 0;
-
-    // Keep track of braces, waiting for the brace count to reach zero.
-    int depth = 0;
-    for (size_t i=0; i < bytes; i++) {
-        if (data[i] == '{') depth++;
-        else if (data[i] == '}') depth--;
-        
-        // If the braces are matched at this point, return the length of the object up to here.
-        if (depth == 0) {
-            return i + 1;
-        }
-    }
-
-    // If the end of the data is reached and the braces are mismatched, return 0.
-    return 0;
-}
-
-
 static int json_request_dispatcher(json_request_context_t *ctx, json_request_handler_f handler)
 {
     cJSON *request, *reply;
@@ -98,7 +70,7 @@ static int json_request_dispatcher(json_request_context_t *ctx, json_request_han
             uint8_t *buffer = realloc(ctx->buffer, ctx->capacity);
             if (buffer == NULL)
             {
-                opal_puts("out of memory");
+                opal_error("out of memory");
                 return 0;
             }
             ctx->buffer = buffer;
@@ -106,28 +78,39 @@ static int json_request_dispatcher(json_request_context_t *ctx, json_request_han
         // Read as many bytes as are available, up to 4096
         ssize_t bytes = read(ctx->fd, ctx->buffer + ctx->count, 4096);
         if (bytes <= 0) {
-            opal_puts("read failed");
+            opal_info("connection closed while reading");
             return 0;
         }
         ctx->count += (size_t)bytes;
 
     CHECK_FOR_REQUESTS:
-        // If the data cannot possibly be valid, close the connection
-        if (ctx->count > 0 && ctx->buffer[0] != '{') {
+        // If the buffer is empty, wait for data
+        if (ctx->count == 0) {
+            return EPOLLIN;
+        }
+
+        const char *parse_end;
+        request = cJSON_ParseWithLengthOpts(ctx->buffer, ctx->count, &parse_end, false);
+        uintptr_t offset = (uintptr_t)parse_end - (uintptr_t)ctx->buffer;
+
+        // If the offset is before the end of the buffer, a syntax error is
+        // present in the JSON.
+        if (offset < ctx->count - 1) {
+            opal_error("syntax error in JSON request");
             return 0;
         }
-        
         // If the data in the buffer forms at least one complete JSON object, call the handler.
-        size_t offset = json_object_length((char *)ctx->buffer, ctx->count);
-        if (offset > 0) {
-            // Create request and reply objects
-            request = cJSON_ParseWithLength(ctx->buffer, offset);
-            if (request == NULL) {
+        if (request != NULL) {
+            // If the type is not object, close the connection
+            if (!cJSON_IsObject(request))
+            {
                 return 0;
             }
+
+            // Create reply object
             reply = cJSON_CreateObject();
             if (reply == NULL) {
-                opal_puts("out of memory");
+                opal_error("out of memory");
                 cJSON_Delete(request);
                 return 0;
             }
@@ -162,7 +145,7 @@ static int json_request_dispatcher(json_request_context_t *ctx, json_request_han
         // Write as many bytes as possible out of the reply
         ssize_t bytes = write(ctx->fd, ctx->buffer + ctx->count, ctx->capacity - ctx->count);
         if (bytes <= 0) {
-            opal_puts("write failed");
+            opal_info("connection closed while writing");
             return 0;
         }
         ctx->count += (size_t) bytes;
@@ -184,7 +167,7 @@ static int json_request_dispatcher(json_request_context_t *ctx, json_request_han
     }
     // Error condition on socket
     else {
-        opal_puts("error condition on socket");
+        opal_error("error condition on socket");
         return 0;
     }
 }
@@ -225,7 +208,7 @@ BIND:
     if (bind(*server_fd, (struct sockaddr *)server_addr, *server_addr_len) != 0)
     {
         close(*server_fd);
-        opal_printf("failed to bind to %s:%u", ip, port);
+        opal_strerror("failed to bind to %s:%u", ip, port);
         return BIND_ERROR;
     }
     listen(*server_fd, 8);
@@ -292,7 +275,6 @@ int json_request_server(const char *ip, uint16_t port, json_request_handler_f ha
     while (true) {
         json_request_context_t *poll_ctx;
         int events;
-        opal_puts("Polling ...");
         if (!poller_wait_ctx(&poller, (void **)&poll_ctx, &events, -1)) {
             break;
         }
@@ -310,7 +292,7 @@ int json_request_server(const char *ip, uint16_t port, json_request_handler_f ha
             int connection_fd = accept(server_fd, (struct sockaddr*)&connection_addr, &connection_addr_len);
             if (connection_fd == -1)
             {
-                opal_puts("failed to accept");
+                opal_strerror("failed to accept");
                 return ACCEPT_ERROR;
             }
 
@@ -346,14 +328,14 @@ int json_request_server(const char *ip, uint16_t port, json_request_handler_f ha
 
             // If the dispatcher returned a valid mask, add it to the poller
             poller_add_ctx(&poller, connection_fd, event_mask, new_ctx);
-            opal_printf("New connection from %s:%u", new_ctx->ip, new_ctx->port);
+            opal_info("New connection from %s:%u", new_ctx->ip, new_ctx->port);
         }
         else {
             // If events pop for a connected socket, call the dispatcher
             int event_mask = json_request_dispatcher(poll_ctx, handler);
             if (event_mask == 0) {
                 poller_remove(&poller, poll_ctx->fd);
-                opal_printf("Connection closed from %s:%u", poll_ctx->ip, poll_ctx->port);
+                opal_info("Connection closed from %s:%u", poll_ctx->ip, poll_ctx->port);
                 json_request_context_delete(poll_ctx);
             }
             else {

@@ -8,13 +8,19 @@ FLAGS := -fpic -shared
 INSTALLED_SO := /usr/lib/lib$(SO)
 INSTALLED_INCLUDE_DIR := /usr/include/$(LIBNAME)
 
+release: $(SO)
+release: DEBUG_FLAG := -DNDEBUG
+release: STRIP := on
 
-all: $(SO)
+debug: $(SO)
+debug: FLAGS += -g
+debug: DEBUG_FLAG := -DDEBUG
+debug: STRIP := off
 
 clean:
 	rm -f $(SO)
 
-install: all
+install: release
 	sudo cp $(SO) $(INSTALLED_SO)
 	sudo chown root:root $(INSTALLED_SO)
 	sudo chmod 0775 $(INSTALLED_SO)
@@ -29,8 +35,9 @@ uninstall:
 
 
 $(SO): $(SOURCES) $(INCLUDES)
-	gcc $(FLAGS) $(SOURCES) -I include -o $@ $(DEPS)
+	gcc $(FLAGS) $(DEBUG_FLAG) $(SOURCES) -I include -o $@ $(DEPS)
+	@if [ "$(STRIP)" = "on" ]; then strip --strip-all $@; fi
 
 
-.PHONY: all clean install uninstall
-.DEFAULT_GOAL := all
+.PHONY: release clean install uninstall
+.DEFAULT_GOAL := release
