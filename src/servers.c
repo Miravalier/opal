@@ -194,14 +194,10 @@ static void json_request_context_delete(json_request_context_t *ctx)
 int json_request_server(const char *ip, uint16_t port, json_request_handler_f handler)
 {
     // Bind socket
-    int server_fd;
-    struct sockaddr_storage server_addr;
-    socklen_t server_addr_len;
-
-    int status = tcp_bind(ip, port, &server_fd, (struct sockaddr *)&server_addr, &server_addr_len);
-    if (status < 0)
+    int server_fd = tcp_bind(ip, port, &server_fd, NULL, NULL);
+    if (server_fd < 0)
     {
-        return BIND_ERROR;
+        return server_fd;
     }
 
     // Set up poller

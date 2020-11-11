@@ -1,5 +1,5 @@
-#ifndef _OPAL_ERRORS_H
-#define _OPAL_ERRORS_H
+#ifndef _OPAL_ERROR_H
+#define _OPAL_ERROR_H
 
 typedef opal_error_e {
     OPAL_SUCCESS = 0,

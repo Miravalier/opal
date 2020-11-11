@@ -3,6 +3,8 @@
 
 #include <stdbool.h>
 
+/** @return A bound connected socket fd, or one of opal_error_e on error. */
+int tcp_connect(const char *host, const char *service);
 
 /** @return A bound TCP socket fd, or one of opal_error_e on error. */
 int tcp_bind(const char *ip, uint16_t port, struct sockaddr *server_addr, socklen_t *server_addr_len);

@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include "opal/tcp.h"
+#include "opal/error.h"
 #include "opal/debug.h"
 
 
@@ -54,12 +55,12 @@ int tcp_connect(const char *host, const char *service)
     if (gai_status != 0)
     {
         opal_error("failed to resolve %s/%s: %s", host, service, gai_strerror(gai_status));
-        return NAME_RESOLUTION_ERROR;
+        return RESOLVE_ERROR;
     }
     if (results == NULL)
     {
         opal_error("failed to resolve %s/%s: no results", host, service);
-        return NAME_RESOLUTION_ERROR;
+        return RESOLVE_ERROR;
     }
 
     // Try all results until one connects
@@ -84,49 +85,63 @@ int tcp_connect(const char *host, const char *service)
     if (fd == -1)
     {
         opal_error("connection failed to %s/%s", host, service);
-        return CONNECTION_ERROR;
+        return CONNECT_ERROR;
     }
     return fd;
 }
 
 
-int tcp_bind(const char *ip, uint16_t port, struct sockaddr *server_addr, socklen_t *server_addr_len)
+int tcp_bind(const char *ip, uint16_t port, struct sockaddr *addr, socklen_t *addr_len)
 {
+    struct sockaddr_storage unused_addr;
+    socklen_t unused_addr_len;
+    if (addr == NULL)
+    {
+        addr = (struct sockaddr *)&unused_addr;
+    }
+    if (addr_len == NULL)
+    {
+        addr_len = &unused_addr_len;
+    }
+
+    struct sockaddr_in *in_addr = (struct sockaddr_in*)addr;
+    struct sockaddr_in6 *in6_addr = (struct sockaddr_in6*)addr;
+
     int server_fd = -1;
 
     // Try to parse as IPv4
-    server_addr->sin_family = AF_INET;
-    server_addr->sin_port = htons(port);
-    *server_addr_len = sizeof (struct sockaddr_in);
-    if (inet_pton(AF_INET, ip, &server_addr->sin.sin_addr.s_addr) == 1)
+    in_addr->sin_family = AF_INET;
+    in_addr->sin_port = htons(port);
+    *addr_len = sizeof (struct sockaddr_in);
+    if (inet_pton(AF_INET, ip, &addr->sin.sin_addr.s_addr) == 1)
     {
         goto BIND;
     }
 
     // Try to parse as IPv6
-    server_addr->sin6.sin6_family = AF_INET6;
-    server_addr->sin6.sin6_port = htons(port);
-    *server_addr_len = sizeof (struct sockaddr_in6);
-    if (inet_pton(AF_INET6, ip, &server_addr->sin6.sin6_addr) == 1)
+    in6_addr->sin6_family = AF_INET6;
+    in6_addr->sin6_port = htons(port);
+    *addr_len = sizeof (struct sockaddr_in6);
+    if (inet_pton(AF_INET6, ip, &addr->sin6.sin6_addr) == 1)
     {
         goto BIND;
     }
 
     // If neither IPv4 nor IPv6, invalid IP
     opal_error("invalid IP address format");
-    return INVALID_IP_ERROR;
+    return FORMAT_ERROR;
 
 BIND:
     // Create socket
-    server_fd = socket(server_addr->sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
+    server_fd = socket(addr->sa_family, SOCK_STREAM, IPPROTO_TCP);
     if (server_fd == -1)
     {
         opal_error("socket allocation failed");
-        return SOCKET_ALLOCATION_ERROR;
+        return SOCKET_ERROR;
     }
 
     // Bind
-    if (bind(server_fd, (struct sockaddr *)server_addr, *server_addr_len) != 0)
+    if (bind(server_fd, addr, *addr_len) != 0)
     {
         close(server_fd);
         opal_strerror("failed to bind to %s:%u", ip, port);
