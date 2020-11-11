@@ -7,17 +7,6 @@
 #include <cjson/cJSON.h>
 
 // Public types
-typedef enum serve_error_e {
-    SERVE_SUCCESS,
-    INVALID_IP_ERROR,
-    SOCKET_ALLOCATION_ERROR,
-    BIND_ERROR,
-    ACCEPT_ERROR,
-    MEMORY_ERROR,
-    THREAD_ERROR,
-    POLL_ERROR
-} serve_error_e;
-
 /**
  * Uses the provided json object to formulate a json object reply.
  * @return True to send the reply or false to close the connection.

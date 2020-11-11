@@ -8,21 +8,14 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <pthread.h>
+#include <cjson/cJSON.h>
 
-#include "opal/servers.h"
-#include "opal/threadpool.h"
+#include "opal/tcp.h"
 #include "opal/poller.h"
 #include "opal/debug.h"
+#include "opal/servers.h"
 
 // Types
-typedef union generic_addr_u {
-    struct sockaddr     sa;
-    struct sockaddr_in  sin;
-    struct sockaddr_in6 sin6;
-} generic_addr_u;
-
-
 typedef struct json_request_context_t {
     // Poll fields
     int         fd;
@@ -42,11 +35,9 @@ typedef struct json_request_context_t {
 
 
 // Function prototypes
-static int bind_server_socket(const char *ip, uint16_t port, int *server_fd, generic_addr_u *server_addr, socklen_t *server_addr_len);
 static int json_request_dispatcher(json_request_context_t *ctx, json_request_handler_f handler);
 static json_request_context_t *json_request_context_new(int fd, const char *ip, uint16_t port);
 static void json_request_context_delete(json_request_context_t *ctx);
-
 
 
 /* Static Functions */
@@ -101,12 +92,6 @@ static int json_request_dispatcher(json_request_context_t *ctx, json_request_han
         }
         // If the data in the buffer forms at least one complete JSON object, call the handler.
         if (request != NULL) {
-            // If the type is not object, close the connection
-            if (!cJSON_IsObject(request))
-            {
-                return 0;
-            }
-
             // Create reply object
             reply = cJSON_CreateObject();
             if (reply == NULL) {
@@ -173,55 +158,11 @@ static int json_request_dispatcher(json_request_context_t *ctx, json_request_han
 }
 
 
-static int bind_server_socket(const char *ip, uint16_t port, int *server_fd, generic_addr_u *server_addr, socklen_t *server_addr_len)
-{
-    // Try to parse as IPv4
-    server_addr->sin.sin_family = AF_INET;
-    server_addr->sin.sin_port = htons(port);
-    *server_addr_len = sizeof (struct sockaddr_in);
-    if (inet_pton(AF_INET, ip, &server_addr->sin.sin_addr.s_addr) == 1)
-    {
-        goto BIND;
-    }
-
-    // Try to parse as IPv6
-    server_addr->sin6.sin6_family = AF_INET6;
-    server_addr->sin6.sin6_port = htons(port);
-    *server_addr_len = sizeof (struct sockaddr_in6);
-    if (inet_pton(AF_INET6, ip, &server_addr->sin6.sin6_addr) == 1)
-    {
-        goto BIND;
-    }
-
-    // If neither IPv4 nor IPv6, invalid IP
-    return INVALID_IP_ERROR;
-
-BIND:
-    // Create socket
-    *server_fd = socket(server_addr->sa.sa_family, SOCK_STREAM, IPPROTO_TCP);
-    if (*server_fd == -1)
-    {
-        return SOCKET_ALLOCATION_ERROR;
-    }
-
-    // Bind
-    if (bind(*server_fd, (struct sockaddr *)server_addr, *server_addr_len) != 0)
-    {
-        close(*server_fd);
-        opal_strerror("failed to bind to %s:%u", ip, port);
-        return BIND_ERROR;
-    }
-    listen(*server_fd, 8);
-
-    return SERVE_SUCCESS;
-}
-
-
 static json_request_context_t *json_request_context_new(int fd, const char *ip, uint16_t port)
 {
     json_request_context_t *ctx = malloc(sizeof(json_request_context_t));
     ctx->fd = fd;
-    ctx->ip = strdup(ip);
+    ctx->ip = ip;
     ctx->port = port;
     ctx->events = 0;
     ctx->buffer = malloc(4096);
@@ -254,13 +195,13 @@ int json_request_server(const char *ip, uint16_t port, json_request_handler_f ha
 {
     // Bind socket
     int server_fd;
-    generic_addr_u server_addr;
+    struct sockaddr_storage server_addr;
     socklen_t server_addr_len;
 
-    int status = bind_server_socket(ip, port, &server_fd, &server_addr, &server_addr_len);
-    if (status != SERVE_SUCCESS)
+    int status = tcp_bind(ip, port, &server_fd, (struct sockaddr *)&server_addr, &server_addr_len);
+    if (status < 0)
     {
-        return status;
+        return BIND_ERROR;
     }
 
     // Set up poller
@@ -287,37 +228,22 @@ int json_request_server(const char *ip, uint16_t port, json_request_handler_f ha
             }
 
             // Get connection
-            generic_addr_u connection_addr;
-            socklen_t connection_addr_len = server_addr_len;
-            int connection_fd = accept(server_fd, (struct sockaddr*)&connection_addr, &connection_addr_len);
-            if (connection_fd == -1)
+            char *remote_address;
+            uint16_t remote_port;
+            int connection_fd = tcp_accept(server_fd, &remote_address, &remote_port);
             {
+                close(server_fd);
                 opal_strerror("failed to accept");
                 return ACCEPT_ERROR;
             }
 
-            // Convert address to string
-            char connection_addr_string[INET6_ADDRSTRLEN];
-            uint16_t connection_port;
-            if (server_addr.sa.sa_family == AF_INET)
-            {
-                inet_ntop(AF_INET, &connection_addr.sin.sin_addr, connection_addr_string, INET_ADDRSTRLEN);
-                connection_port = ntohs(connection_addr.sin.sin_port);
-            }
-            else if (server_addr.sa.sa_family == AF_INET6)
-            {
-                inet_ntop(AF_INET6, &connection_addr.sin6.sin6_addr, connection_addr_string, INET6_ADDRSTRLEN);
-                connection_port = ntohs(connection_addr.sin6.sin6_port);
-            }
-            else
-            {
-                close(connection_fd);
-                close(server_fd);
-                return INVALID_IP_ERROR;
-            }
-
             // Create a poll context
-            json_request_context_t *new_ctx = json_request_context_new(connection_fd, connection_addr_string, connection_port);
+            json_request_context_t *new_ctx = json_request_context_new(connection_fd, remote_address, remote_port);
+            if (new_ctx == NULL)
+            {
+                free(remote_address);
+                return MEMORY_ERROR;
+            }
 
             // Call the dispatcher
             int event_mask = json_request_dispatcher(new_ctx, handler);
