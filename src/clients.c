@@ -9,18 +9,11 @@
 #include "opal/debug.h"
 
 
-cJSON *send_json_request(const char *host, const char *service, const cJSON *request)
+cJSON *send_json_request(int fd, const cJSON *request)
 {
-    int fd = tcp_connect(host, service);
-    if (fd == -1)
-    {
-        return NULL;
-    }
-
     uint8_t *request_buffer = cJSON_Print(request);
     if (request_buffer == NULL)
     {
-        close(fd);
         return NULL;
     }
 
@@ -28,7 +21,6 @@ cJSON *send_json_request(const char *host, const char *service, const cJSON *req
     if (!tcp_write_all(fd, request_buffer, strlen(request_buffer)))
     {
         free(request_buffer);
-        close(fd);
         return NULL;
     }
     free(request_buffer);
@@ -39,8 +31,7 @@ cJSON *send_json_request(const char *host, const char *service, const cJSON *req
     uint8_t *reply_buffer = malloc(reply_capacity);
     if (reply_buffer == NULL)
     {
-        close(fd);
-        opal_error("out of memory during JSON request");
+        opal_debug_error("out of memory during JSON request");
         return NULL;
     }
 
@@ -55,9 +46,8 @@ cJSON *send_json_request(const char *host, const char *service, const cJSON *req
             uint8_t *resized_reply_buffer = realloc(reply_buffer, reply_capacity);
             if (resized_reply_buffer == NULL)
             {
-                opal_error("out of memory during JSON request");
+                opal_debug_error("out of memory during JSON request");
                 free(reply_buffer);
-                close(fd);
                 return NULL;
             }
             reply_buffer = resized_reply_buffer;
@@ -67,27 +57,25 @@ cJSON *send_json_request(const char *host, const char *service, const cJSON *req
         ssize_t last_read = read(fd, reply_buffer + reply_size, reply_capacity - reply_size);
         if (last_read <= 0)
         {
-            opal_strerror("read failed during json request");
-            close(fd);
+            opal_debug_strerror("read failed during json request");
             free(reply_buffer);
             return NULL;
         }
+        reply_size += last_read;
 
         // Try to parse reply
         const char *parse_end;
         cJSON *reply = cJSON_ParseWithLengthOpts((char *)reply_buffer, reply_size, &parse_end, false);
         uintptr_t offset = (uintptr_t)parse_end - (uintptr_t)reply_buffer;
-        if (offset < reply_size - 1)
+        if (reply_size - offset > 1)
         {
-            opal_error("syntax error in JSON reply");
-            close(fd);
+            opal_debug_error("syntax error in JSON reply");
             free(reply_buffer);
             return NULL;
         }
         // If a reply was received
         if (reply != NULL)
         {
-            close(fd);
             free(reply_buffer);
             return reply;
         }

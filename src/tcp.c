@@ -35,7 +35,7 @@ int tcp_accept(int bound_fd, char **address, uint16_t *port)
         char *ip_string = malloc(INET6_ADDRSTRLEN);
         if (ip_string == NULL)
         {
-            opal_error("out of memory during tcp accept");
+            opal_debug_error("out of memory during tcp accept");
             close(fd);
             return MEMORY_ERROR;
         }
@@ -128,7 +128,7 @@ int tcp_connect(const char *host, const char *service)
     int fd = -1;
     struct addrinfo hints = {
         .ai_family = AF_UNSPEC,
-        .ai_socktype = SOCK_DGRAM
+        .ai_socktype = SOCK_STREAM
     };
     struct addrinfo *results;
 
@@ -136,12 +136,12 @@ int tcp_connect(const char *host, const char *service)
     int gai_status = getaddrinfo(host, service, &hints, &results);
     if (gai_status != 0)
     {
-        opal_error("failed to resolve %s/%s: %s", host, service, gai_strerror(gai_status));
+        opal_debug_error("failed to resolve %s/%s: %s", host, service, gai_strerror(gai_status));
         return RESOLVE_ERROR;
     }
     if (results == NULL)
     {
-        opal_error("failed to resolve %s/%s: no results", host, service);
+        opal_debug_error("failed to resolve %s/%s: no results", host, service);
         return RESOLVE_ERROR;
     }
 
@@ -150,25 +150,29 @@ int tcp_connect(const char *host, const char *service)
         // Try to open a socket with this result
         fd = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
         if (fd == -1) {
+            opal_debug_strerror("socket failed");
             continue;
         }
         // Try to connect to this result
         if (connect(fd, result->ai_addr, result->ai_addrlen) != 0)
         {
+            opal_debug_strerror("connect failed");
             close(fd);
             fd = -1;
             continue;
         }
-        // If neither operation failed, this socket is connected
         break;
     }
+
+    freeaddrinfo(results);
 
     // If all sockets failed to connect
     if (fd == -1)
     {
-        opal_error("connection failed to %s/%s", host, service);
+        opal_debug_error("connection failed to %s/%s", host, service);
         return CONNECT_ERROR;
     }
+
     return fd;
 }
 
@@ -210,7 +214,7 @@ int tcp_bind(const char *ip, uint16_t port, struct sockaddr *addr, socklen_t *ad
     }
 
     // If neither IPv4 nor IPv6, invalid IP
-    opal_error("invalid IP address format");
+    opal_debug_error("invalid IP address format");
     return FORMAT_ERROR;
 
 BIND:
@@ -218,7 +222,7 @@ BIND:
     server_fd = socket(addr->sa_family, SOCK_STREAM, IPPROTO_TCP);
     if (server_fd == -1)
     {
-        opal_error("socket allocation failed");
+        opal_debug_error("socket allocation failed");
         return SOCKET_ERROR;
     }
 
@@ -226,7 +230,7 @@ BIND:
     if (bind(server_fd, addr, *addr_len) != 0)
     {
         close(server_fd);
-        opal_strerror("failed to bind to %s:%u", ip, port);
+        opal_debug_strerror("failed to bind to %s:%u", ip, port);
         return BIND_ERROR;
     }
 

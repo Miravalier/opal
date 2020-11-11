@@ -62,7 +62,7 @@ static int json_request_dispatcher(json_request_context_t *ctx, json_request_han
             uint8_t *buffer = realloc(ctx->buffer, ctx->capacity);
             if (buffer == NULL)
             {
-                opal_error("out of memory");
+                opal_debug_error("out of memory");
                 return 0;
             }
             ctx->buffer = buffer;
@@ -70,7 +70,7 @@ static int json_request_dispatcher(json_request_context_t *ctx, json_request_han
         // Read as many bytes as are available, up to 4096
         ssize_t bytes = read(ctx->fd, ctx->buffer + ctx->count, 4096);
         if (bytes <= 0) {
-            opal_info("connection closed while reading");
+            opal_debug_info("connection closed while reading");
             return 0;
         }
         ctx->count += (size_t)bytes;
@@ -88,7 +88,7 @@ static int json_request_dispatcher(json_request_context_t *ctx, json_request_han
         // If the offset is before the end of the buffer, a syntax error is
         // present in the JSON.
         if (offset < ctx->count - 1) {
-            opal_error("syntax error in JSON request");
+            opal_debug_error("syntax error in JSON request");
             return 0;
         }
         // If the data in the buffer forms at least one complete JSON object, call the handler.
@@ -96,7 +96,7 @@ static int json_request_dispatcher(json_request_context_t *ctx, json_request_han
             // Create reply object
             reply = cJSON_CreateObject();
             if (reply == NULL) {
-                opal_error("out of memory");
+                opal_debug_error("out of memory");
                 cJSON_Delete(request);
                 return 0;
             }
@@ -131,7 +131,7 @@ static int json_request_dispatcher(json_request_context_t *ctx, json_request_han
         // Write as many bytes as possible out of the reply
         ssize_t bytes = write(ctx->fd, ctx->buffer + ctx->count, ctx->capacity - ctx->count);
         if (bytes <= 0) {
-            opal_info("connection closed while writing");
+            opal_debug_info("connection closed while writing");
             return 0;
         }
         ctx->count += (size_t) bytes;
@@ -153,7 +153,7 @@ static int json_request_dispatcher(json_request_context_t *ctx, json_request_han
     }
     // Error condition on socket
     else {
-        opal_error("error condition on socket");
+        opal_debug_error("error condition on socket");
         return 0;
     }
 }
@@ -233,8 +233,8 @@ int json_request_server(const char *ip, uint16_t port, json_request_handler_f ha
             int connection_fd = tcp_accept(server_fd, &remote_address, &remote_port);
             if (connection_fd < 0)
             {
+                opal_debug_error("failed to accept");
                 close(server_fd);
-                opal_error("failed to accept");
                 return connection_fd;
             }
 
@@ -255,14 +255,14 @@ int json_request_server(const char *ip, uint16_t port, json_request_handler_f ha
 
             // If the dispatcher returned a valid mask, add it to the poller
             poller_add_ctx(&poller, connection_fd, event_mask, new_ctx);
-            opal_info("New connection from %s:%u", new_ctx->ip, new_ctx->port);
+            opal_debug_info("New connection from %s:%u", new_ctx->ip, new_ctx->port);
         }
         else {
             // If events pop for a connected socket, call the dispatcher
             int event_mask = json_request_dispatcher(poll_ctx, handler);
             if (event_mask == 0) {
                 poller_remove(&poller, poll_ctx->fd);
-                opal_info("Connection closed from %s:%u", poll_ctx->ip, poll_ctx->port);
+                opal_debug_info("Connection closed from %s:%u", poll_ctx->ip, poll_ctx->port);
                 json_request_context_delete(poll_ctx);
             }
             else {
