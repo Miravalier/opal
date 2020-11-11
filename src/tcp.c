@@ -1,7 +1,10 @@
 #include <stdbool.h>
-#include <sys/socket.h>
+#include <stdlib.h>
 #include <netdb.h>
 #include <unistd.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 #include "opal/tcp.h"
 #include "opal/error.h"
@@ -9,6 +12,85 @@
 
 
 /* Public Functions */
+int tcp_accept(int bound_fd, char **address, uint16_t *port)
+{
+    struct sockaddr_storage addr_storage;
+    socklen_t addr_len = sizeof addr_storage;
+    struct sockaddr *addr = (struct sockaddr *)&addr_storage;
+    struct sockaddr_in *in_addr = (struct sockaddr_in *)&addr_storage;
+    struct sockaddr_in6 *in6_addr = (struct sockaddr_in6 *)&addr_storage;
+
+    // Get connected fd
+    int fd = accept(bound_fd, addr, &addr_len);
+    if (fd == -1)
+    {
+        return ACCEPT_ERROR;
+    }
+
+    // Get remote address
+    if (address != NULL)
+    {
+        *address = NULL;
+
+        char *ip_string = malloc(INET6_ADDRSTRLEN);
+        if (ip_string == NULL)
+        {
+            opal_error("out of memory during tcp accept");
+            close(fd);
+            return MEMORY_ERROR;
+        }
+
+        if (addr->sa_family == AF_INET)
+        {
+            if (inet_ntop(addr->sa_family, &in_addr->sin_addr.s_addr, ip_string, INET_ADDRSTRLEN) == NULL)
+            {
+                close(fd);
+                free(ip_string);
+                return FORMAT_ERROR;
+            }
+        }
+        else if (addr->sa_family == AF_INET6)
+        {
+            if (inet_ntop(addr->sa_family, &in6_addr->sin6_addr, ip_string, INET6_ADDRSTRLEN) == NULL)
+            {
+                close(fd);
+                free(ip_string);
+                return FORMAT_ERROR;
+            }
+        }
+        else
+        {
+            close(fd);
+            free(ip_string);
+            return FORMAT_ERROR;
+        }
+
+        *address = ip_string;
+    }
+
+    // Get remote port
+    if (port != NULL)
+    {
+        *port = 0;
+        if (addr->sa_family == AF_INET)
+        {
+            *port = ntohs(in_addr->sin_port);
+        }
+        else if (addr->sa_family == AF_INET6)
+        {
+            *port = ntohs(in6_addr->sin6_port);
+        }
+        else
+        {
+            close(fd);
+            return FORMAT_ERROR;
+        }
+    }
+
+    return fd;
+}
+
+
 bool tcp_read_all(int fd, void *buffer, size_t bytes)
 {
     size_t bytes_recved = 0;
@@ -113,7 +195,7 @@ int tcp_bind(const char *ip, uint16_t port, struct sockaddr *addr, socklen_t *ad
     in_addr->sin_family = AF_INET;
     in_addr->sin_port = htons(port);
     *addr_len = sizeof (struct sockaddr_in);
-    if (inet_pton(AF_INET, ip, &addr->sin.sin_addr.s_addr) == 1)
+    if (inet_pton(AF_INET, ip, &in_addr->sin_addr.s_addr) == 1)
     {
         goto BIND;
     }
@@ -122,7 +204,7 @@ int tcp_bind(const char *ip, uint16_t port, struct sockaddr *addr, socklen_t *ad
     in6_addr->sin6_family = AF_INET6;
     in6_addr->sin6_port = htons(port);
     *addr_len = sizeof (struct sockaddr_in6);
-    if (inet_pton(AF_INET6, ip, &addr->sin6.sin6_addr) == 1)
+    if (inet_pton(AF_INET6, ip, &in6_addr->sin6_addr) == 1)
     {
         goto BIND;
     }

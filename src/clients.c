@@ -1,3 +1,7 @@
+#include <string.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <unistd.h>
 #include <cjson/cJSON.h>
 
 #include "opal/tcp.h"
@@ -21,7 +25,7 @@ cJSON *send_json_request(const char *host, const char *service, const cJSON *req
     }
 
     // Send JSON request
-    if (!tcp_write_all(request_buffer, strlen(request_buffer)))
+    if (!tcp_write_all(fd, request_buffer, strlen(request_buffer)))
     {
         free(request_buffer);
         close(fd);

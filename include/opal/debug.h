@@ -1,8 +1,6 @@
 #ifndef _OPAL_DEBUG_H
 #define _OPAL_DEBUG_H
 
-#include <stdio.h>
-
 #define SGR_RED     "\x1B[31m"
 #define SGR_CYAN    "\x1B[32m"
 #define SGR_YELLOW  "\x1B[33m"
@@ -13,6 +11,8 @@
 #ifndef NDEBUG
 
 #include <errno.h>
+#include <stdio.h>
+#include <string.h>
 
 #define opal_puts(s)            printf(                         \
                                     SGR_YELLOW "%s" SGR_RESET   \

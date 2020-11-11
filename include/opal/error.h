@@ -1,7 +1,7 @@
 #ifndef _OPAL_ERROR_H
 #define _OPAL_ERROR_H
 
-typedef opal_error_e {
+typedef enum opal_error_e {
     OPAL_SUCCESS = 0,
     MEMORY_ERROR = -1,
     ACCEPT_ERROR = -2,

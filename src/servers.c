@@ -14,6 +14,7 @@
 #include "opal/poller.h"
 #include "opal/debug.h"
 #include "opal/servers.h"
+#include "opal/error.h"
 
 // Types
 typedef struct json_request_context_t {
@@ -36,7 +37,7 @@ typedef struct json_request_context_t {
 
 // Function prototypes
 static int json_request_dispatcher(json_request_context_t *ctx, json_request_handler_f handler);
-static json_request_context_t *json_request_context_new(int fd, const char *ip, uint16_t port);
+static json_request_context_t *json_request_context_new(int fd, char *ip, uint16_t port);
 static void json_request_context_delete(json_request_context_t *ctx);
 
 
@@ -158,7 +159,10 @@ static int json_request_dispatcher(json_request_context_t *ctx, json_request_han
 }
 
 
-static json_request_context_t *json_request_context_new(int fd, const char *ip, uint16_t port)
+/**
+ * @param ip    Takes ownership of ip.
+ */
+static json_request_context_t *json_request_context_new(int fd, char *ip, uint16_t port)
 {
     json_request_context_t *ctx = malloc(sizeof(json_request_context_t));
     ctx->fd = fd;
@@ -194,7 +198,7 @@ static void json_request_context_delete(json_request_context_t *ctx)
 int json_request_server(const char *ip, uint16_t port, json_request_handler_f handler)
 {
     // Bind socket
-    int server_fd = tcp_bind(ip, port, &server_fd, NULL, NULL);
+    int server_fd = tcp_bind(ip, port, NULL, NULL);
     if (server_fd < 0)
     {
         return server_fd;
@@ -227,10 +231,11 @@ int json_request_server(const char *ip, uint16_t port, json_request_handler_f ha
             char *remote_address;
             uint16_t remote_port;
             int connection_fd = tcp_accept(server_fd, &remote_address, &remote_port);
+            if (connection_fd < 0)
             {
                 close(server_fd);
-                opal_strerror("failed to accept");
-                return ACCEPT_ERROR;
+                opal_error("failed to accept");
+                return connection_fd;
             }
 
             // Create a poll context
