@@ -11,7 +11,7 @@
 
 cJSON *send_json_request(int fd, const cJSON *request)
 {
-    uint8_t *request_buffer = cJSON_Print(request);
+    char *request_buffer = cJSON_Print(request);
     if (request_buffer == NULL)
     {
         return NULL;

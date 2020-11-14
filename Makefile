@@ -3,18 +3,19 @@ SO := $(LIBNAME).so
 SOURCES := $(wildcard src/*.c)
 INCLUDES := $(wildcard include/opal/*.h)
 DEPS := -lpthread -lcjson -lm
-FLAGS := -fpic -shared
+C_FLAGS := -fpic -shared -Wall -Wextra -Wpedantic
+CPP_FLAGS :=
 
 INSTALLED_SO := /usr/lib/lib$(SO)
 INSTALLED_INCLUDE_DIR := /usr/include/$(LIBNAME)
 
 release: $(SO)
-release: DEBUG_FLAG := -DNDEBUG
+release: CPP_FLAGS += -DNDEBUG
 release: STRIP := on
 
 debug: $(SO)
 debug: FLAGS += -g
-debug: DEBUG_FLAG := -DDEBUG
+debug: CPP_FLAGS += -DDEBUG
 debug: STRIP := off
 
 clean:
@@ -35,7 +36,7 @@ uninstall:
 
 
 $(SO): $(SOURCES) $(INCLUDES)
-	gcc $(FLAGS) $(DEBUG_FLAG) $(SOURCES) -I include -o $@ $(DEPS)
+	gcc $(C_FLAGS) $(CPP_FLAGS) $(SOURCES) -I include -o $@ $(DEPS)
 	@if [ "$(STRIP)" = "on" ]; then strip --strip-all $@; fi
 
 

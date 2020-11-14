@@ -211,7 +211,7 @@ static int crypto_channel_read_continue(crypto_channel_t *channel)
 // Public functions
 void crypto_generate_keys(remote_key_t *remote, local_key_t *local)
 {
-    crypto_box_keypair(remote, local);
+    crypto_box_keypair((void*)remote, (void*)local);
 }
 
 
@@ -221,7 +221,7 @@ void crypto_channel_init(crypto_channel_t *channel, int fd, const local_key_t *l
     channel->operation = NO_OP;
     channel->unread_data_start = 0;
     channel->unread_data_end = 0;
-    crypto_box_beforenm(channel->key, remote_key, local_key);
+    crypto_box_beforenm(channel->key, (void*)remote_key, (void*)local_key);
 }
 
 

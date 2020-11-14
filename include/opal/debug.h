@@ -54,8 +54,8 @@
             )
 
 #else /* NDEBUG */
-#define opal_debug_printf(fmt, ...)     (void)(fmt, ##__VA_ARGS__)
-#define opal_debug_strerror(fmt, ...)   (void)(fmt, ##__VA_ARGS__)
+#define opal_debug_printf(fmt, ...)     (void)fmt
+#define opal_debug_strerror(fmt, ...)   (void)fmt
 #define opal_printf(fmt, ...)           printf(fmt "\n", ##__VA_ARGS__)
 #endif /* NDEBUG */
 

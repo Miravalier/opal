@@ -82,7 +82,7 @@ static int json_request_dispatcher(json_request_context_t *ctx, json_request_han
         }
 
         const char *parse_end;
-        request = cJSON_ParseWithLengthOpts(ctx->buffer, ctx->count, &parse_end, false);
+        request = cJSON_ParseWithLengthOpts((char *)ctx->buffer, ctx->count, &parse_end, false);
         uintptr_t offset = (uintptr_t)parse_end - (uintptr_t)ctx->buffer;
 
         // If the offset is before the end of the buffer, a syntax error is
@@ -223,7 +223,7 @@ int json_request_server(const char *ip, uint16_t port, json_request_handler_f ha
 
         // Server socket
         if (poll_ctx->fd == server_fd) {
-            if (events & EPOLLIN == 0) {
+            if ((events & EPOLLIN) == 0) {
                 return POLL_ERROR;
             }
 

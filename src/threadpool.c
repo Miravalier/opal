@@ -13,6 +13,7 @@ static void *thread_pool_worker(thread_pool_t *pool)
         // Perform task
         task(args);
     }
+    return NULL;
 }
 
 

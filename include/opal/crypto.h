@@ -38,7 +38,8 @@ typedef struct crypto_channel_t {
     struct {
         uint8_t plaintext_zeroes[crypto_box_ZEROBYTES];
         union {
-            uint8_t plaintext[0];
+            // Size 0 arrays are forbidden by ISO C
+            uint8_t plaintext[1];
             uint8_t plaintext_data[CRYPTO_PACKET_MAX];
         };
     } __attribute__((packed));
@@ -49,7 +50,8 @@ typedef struct crypto_channel_t {
 #if crypto_box_NONCEBYTES + CRYPTO_LENGTH_BYTES > crypto_box_BOXZEROBYTES
             struct {
                 union {
-                    uint8_t ciphertext[0];
+                    // Size 0 arrays are forbidden by ISO C
+                    uint8_t ciphertext[1];
                     uint16_t ciphertext_network_length;
                 };
                 uint8_t ciphertext_nonce[crypto_box_NONCEBYTES];
