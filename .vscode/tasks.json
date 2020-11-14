@@ -3,7 +3,7 @@
     "tasks": [
         {
             "type": "shell",
-            "label": "Make",
+            "label": "Make Release",
             "command": "make",
             "args": ["all"],
             "options": {
@@ -12,6 +12,15 @@
                 "kind": "build",
                 "isDefault": true
             }
+        },
+        {
+            "type": "shell",
+            "label": "Make Debug",
+            "command": "make",
+            "args": ["debug"],
+            "options": {
+            },
+            "group": "build"
         },
         {
             "type": "shell",
