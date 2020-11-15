@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import ctypes
 from . import dll
-from typing import Tuple
 
 
 # Constants
@@ -12,10 +11,10 @@ CHANNEL_WRITE_WAIT = -3
 
 
 # Types
-local_key_t = ctypes.c_ubyte * 32
-local_key_p = ctypes.POINTER(local_key_t)
-remote_key_t = ctypes.c_ubyte * 32
-remote_key_p = ctypes.POINTER(remote_key_t)
+private_key_t = ctypes.c_ubyte * 32
+private_key_p = ctypes.POINTER(private_key_t)
+public_key_t = ctypes.c_ubyte * 32
+public_key_p = ctypes.POINTER(private_key_t)
 crypto_channel_p = ctypes.c_void_p
 buffer_p = ctypes.POINTER(ctypes.c_ubyte)
 
@@ -23,11 +22,15 @@ buffer_p = ctypes.POINTER(ctypes.c_ubyte)
 # C Functions
 _crypto_generate_keys = dll.crypto_generate_keys
 _crypto_generate_keys.restype = None
-_crypto_generate_keys.argtypes = (local_key_p, remote_key_p)
+_crypto_generate_keys.argtypes = (public_key_p, private_key_p)
+
+_crypto_generate_public_key = dll.crypto_generate_public_key
+_crypto_generate_public_key.restype = None
+_crypto_generate_public_key.argtypes = (public_key_p, private_key_p)
 
 _crypto_channel_new = dll.crypto_channel_new
 _crypto_channel_new.restype = crypto_channel_p
-_crypto_channel_new.argtypes = (ctypes.c_int, local_key_p, remote_key_p)
+_crypto_channel_new.argtypes = (ctypes.c_int, private_key_p, public_key_p)
 
 _crypto_channel_free = dll.crypto_channel_free
 _crypto_channel_free.restype = None
@@ -35,7 +38,11 @@ _crypto_channel_free.argtypes = (crypto_channel_p,)
 
 _crypto_channel_init = dll.crypto_channel_init
 _crypto_channel_init.restype = None
-_crypto_channel_init.argtypes = (crypto_channel_p, ctypes.c_int, local_key_p, remote_key_p)
+_crypto_channel_init.argtypes = (crypto_channel_p, ctypes.c_int, private_key_p, public_key_p)
+
+_crypto_channel_connect = dll.crypto_channel_init
+_crypto_channel_connect.restype = ctypes.c_int
+_crypto_channel_connect.argtypes = (crypto_channel_p, public_key_p)
 
 _crypto_channel_fini = dll.crypto_channel_fini
 _crypto_channel_fini.restype = None
@@ -55,39 +62,51 @@ _crypto_channel_continue.argtypes = (crypto_channel_p,)
 
 
 # Python Wrappers
+import asyncio
 import os
 import socket
+from typing import Tuple
 
 
 def generate_keys() -> Tuple[bytes, bytes]:
     """
     @return A tuple containing the remote key and the local key.
     """
-    remote_key = remote_key_t()
-    local_key = local_key_t()
-    _crypto_generate_keys(remote_key, local_key)
-    return bytes(remote_key), bytes(local_key)
+    public_key = public_key_t()
+    private_key = private_key_t()
+    _crypto_generate_keys(public_key, private_key)
+    return bytes(public_key), bytes(private_key)
+
+
+def generate_public_key(private_key: bytes) -> bytes:
+    """
+    @return A public key generated using the private key.
+    """
+    public_key = public_key_t()
+    _crypto_generate_public_key(public_key, private_key)
+    return bytes(public_key)
 
 
 class CryptoChannel:
-    @classmethod
-    def connect(cls, host, port, local_key, remote_key):
-        sock = socket.socket()
-        sock.connect((host, port))
-        return cls(sock, local_key, remote_key)
-
-    def __init__(self, fd, local_key: bytes, remote_key: bytes):
-        # Set every attribute
+    def __init__(self, fd, private_key: bytes = None, public_key: bytes = None):
+        # Set cleanup attributes
         self._channel = None
         self.fd_owner = None
         self.fd = None
-        self.local_key = local_key
-        self.remote_key = remote_key
+        # Set key attributes
+        if private_key is None:
+            self.public_key, self.private_key = generate_keys()
+        elif public_key is None:
+            self.private_key = private_key
+            self.public_key = generate_public_key(private_key)
+        else:
+            self.private_key = private_key
+            self.public_key = public_key
         # Validate key lengths
-        if len(local_key) != local_key_t._length_:
-            raise TypeError("local key must be {} bytes".format(local_key_t._length_))
-        if len(remote_key) != remote_key_t._length_:
-            raise TypeError("remote key must be {} bytes".format(remote_key_t._length_))
+        if len(private_key) != private_key_t._length_:
+            raise TypeError("local key must be {} bytes".format(private_key_t._length_))
+        if len(public_key) != public_key_t._length_:
+            raise TypeError("remote key must be {} bytes".format(public_key_t._length_))
         # Overwrite _channel and fd
         if hasattr(fd, 'fileno'):
             self.fd_owner = fd
@@ -95,7 +114,7 @@ class CryptoChannel:
         else:
             self.fd_owner = self
             self.fd = fd
-        self._channel = _crypto_channel_new(self.fd, local_key, remote_key)
+        self._channel = _crypto_channel_new(self.fd, private_key, public_key)
 
     def __del__(self):
         self.close()
@@ -144,13 +163,6 @@ class CryptoChannel:
 
 
 class AsyncCryptoChannel(CryptoChannel):
-    @classmethod
-    async def connect(cls, host, port, local_key, remote_key):
-        sock = socket.socket()
-        sock.setblocking(False)
-        await loop.sock_connect(sock, (host, port))
-        return cls(sock, local_key, remote_key)
-
     def _read_continue(self, future, buffer):
         status = _crypto_channel_continue(self._channel)
         if status == CHANNEL_SUCCESS:

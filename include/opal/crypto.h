@@ -10,8 +10,8 @@
 #define CRYPTO_HEADER_SIZE      (crypto_box_NONCEBYTES + CRYPTO_LENGTH_BYTES)
 
 
-typedef uint8_t local_key_t[crypto_box_SECRETKEYBYTES];
-typedef uint8_t remote_key_t[crypto_box_PUBLICKEYBYTES];
+typedef uint8_t private_key_t[crypto_box_SECRETKEYBYTES];
+typedef uint8_t public_key_t[crypto_box_PUBLICKEYBYTES];
 
 typedef enum crypto_channel_status_e {
     CHANNEL_SUCCESS = 0,
@@ -24,6 +24,8 @@ typedef enum crypto_operation_e {
     NO_OP,
     WRITE_OP,
     READ_OP,
+    CONNECT_WRITE_OP,
+    CONNECT_READ_OP,
 } crypto_operation_e;
 
 typedef struct crypto_channel_t {
@@ -32,7 +34,10 @@ typedef struct crypto_channel_t {
     // Current operation, for nonblocking channels
     crypto_operation_e operation;
     // Key material
-    uint8_t key[crypto_box_BEFORENMBYTES];
+    private_key_t private_key;
+    public_key_t local_public_key;
+    public_key_t remote_public_key;
+    uint8_t shared_key[crypto_box_BEFORENMBYTES];
     // Plaintext Buffer
     struct {
         uint8_t plaintext_zeroes[crypto_box_ZEROBYTES];
@@ -99,42 +104,52 @@ typedef struct crypto_channel_t {
 
 
 /**
- * @brief   Generates the local and remote side of a key.
+ * @brief   Generates a public and private keypair.
  */
-void crypto_generate_keys(remote_key_t *remote, local_key_t *local);
+void crypto_generate_keys(void *public_key, void *private_key);
 
+/**
+ * @brief   Generates a public key derived from a given private key.
+ */
+void crypto_generate_public_key(void *public_key, const void *private_key);
 
 /**
  * @brief   Allocates memory for and returns a crypto_channel_t. The returned channel
  *          must be freed by the caller.
  */
-crypto_channel_t *crypto_channel_new(int fd, const local_key_t *local_key, const remote_key_t *remote_key);
-
+crypto_channel_t *crypto_channel_new(int fd, const void *private_key, const void *public_key);
 
 /**
- * @brief   Releases the resources associated with a crypto_channel_t returned from
- *          crypto_channel_new() and deallocates the memory.
+ * @brief   Zeroes keys and releases the resources associated with a crypto_channel_t
+ *          returned from crypto_channel_new() and deallocates the memory.
  * 
  * @warning Does NOT close or do anything to the underlying fd.
  */
 void crypto_channel_free(crypto_channel_t *channel);
 
-
 /**
  * @brief   Prepares a channel for writing and reading by setting its underlying fd and
- *          key material.
+ *          local key material.
  */
-void crypto_channel_init(crypto_channel_t *channel, int fd, const local_key_t *local_key, const remote_key_t *remote_key);
-
+void crypto_channel_init(crypto_channel_t *channel, int fd, const void *private_key, const void *public_key);
 
 /**
- * @brief   Releases resources associated with a channel initialized with crypto_channel_init(),
- *          currently does nothing.
+ * @brief   Exchange public keys and calculates a shared key. If the public key is provided,
+ *          the remote side's public key must match. If NULL, any public key will be accepted.
+ * 
+ * @return  0 on success, -1 on error, CHANNEL_READ_WAIT if the fd must be polled for reading,
+ *          or CHANNEL_WRITE_WAIT if the fd must be polled for writing. If the channel's fd is
+ *          blocking, only 0 or -1 will be returned.
+ */
+int crypto_channel_connect(crypto_channel_t *channel, const void *remote_public_key);
+
+/**
+ * @brief   Zeroes keys and releases resources associated with a channel initialized with
+ *          crypto_channel_init().
  * 
  * @warning Does NOT close or do anything to the underlying fd.
  */
 void crypto_channel_fini(crypto_channel_t *channel);
-
 
 /**
  * @brief   If the channel is blocking, returns 0 when the entire message has been

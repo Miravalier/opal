@@ -10,6 +10,7 @@
 #include "opal/crypto.h"
 #include "opal/debug.h"
 
+
 // Constructor
 void __attribute__((constructor)) crypto_channel_constructor(void)
 {
@@ -34,7 +35,7 @@ static void crypto_channel_encrypt_chunk(crypto_channel_t *channel)
         channel->plaintext_zeroes,
         crypto_box_ZEROBYTES + channel->plaintext_length,
         nonce,
-        channel->key
+        channel->shared_key
     );
     // Store the ciphertext network length
     channel->ciphertext_network_length = htobe16(channel->plaintext_length);
@@ -59,7 +60,7 @@ static int crypto_channel_decrypt_chunk(crypto_channel_t *channel)
         channel->ciphertext_zeroes,
         crypto_box_ZEROBYTES + channel->ciphertext_length - CRYPTO_HEADER_SIZE,
         nonce,
-        channel->key
+        channel->shared_key
     );
     // Store plaintext size and zero processed bytes
     channel->plaintext_length = channel->ciphertext_length - CRYPTO_HEADER_SIZE;
@@ -220,20 +221,26 @@ static int crypto_channel_read_continue(crypto_channel_t *channel)
 
 
 // Public functions
-void crypto_generate_keys(remote_key_t *remote, local_key_t *local)
+void crypto_generate_keys(void *public_key, void *private_key)
 {
-    crypto_box_keypair((void*)remote, (void*)local);
+    crypto_box_keypair(public_key, private_key);
 }
 
 
-crypto_channel_t *crypto_channel_new(int fd, const local_key_t *local_key, const remote_key_t *remote_key)
+void crypto_generate_public_key(void *public_key, const void *private_key)
+{
+    crypto_scalarmult_base(public_key, private_key);
+}
+
+
+crypto_channel_t *crypto_channel_new(int fd, const void *private_key, const void *public_key)
 {
     crypto_channel_t *channel = malloc(sizeof(crypto_channel_t));
     if (channel == NULL)
     {
         return NULL;
     }
-    crypto_channel_init(channel, fd, local_key, remote_key);
+    crypto_channel_init(channel, fd, private_key, public_key);
     return channel;
 }
 
@@ -248,22 +255,28 @@ void crypto_channel_free(crypto_channel_t *channel)
 }
 
 
-void crypto_channel_init(crypto_channel_t *channel, int fd, const local_key_t *local_key, const remote_key_t *remote_key)
+void crypto_channel_init(crypto_channel_t *channel, int fd, const void *private_key, const void *public_key)
 {
     channel->fd = fd;
     channel->operation = NO_OP;
     channel->unread_data_start = 0;
     channel->unread_data_end = 0;
-    if (crypto_box_beforenm(channel->key, (void*)remote_key, (void*)local_key) != 0)
-    {
-        opal_error("failed to create shared key during crypto channel initialization");
-    }
+    memcpy(channel->private_key, private_key, sizeof(private_key_t));
+    memcpy(channel->local_public_key, public_key, sizeof(public_key_t));
+}
+
+
+int crypto_channel_connect(crypto_channel_t *channel, const void *remote_public_key)
+{
+    channel->operation = CONNECT_WRITE_OP;
+    channel;
 }
 
 
 void crypto_channel_fini(crypto_channel_t *channel)
 {
-    (void)channel;
+    sodium_memzero(channel->shared_key, crypto_box_BEFORENMBYTES);
+    sodium_memzero(channel->private_key, crypto_box_SECRETKEYBYTES);
 }
 
 
