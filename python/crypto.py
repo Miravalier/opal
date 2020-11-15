@@ -148,7 +148,7 @@ class CryptoChannel:
         elif status == CHANNEL_READ_WAIT or status == CHANNEL_WRITE_WAIT:
             raise IOError("CryptoChannel underlying fd cannot be nonblocking")
     
-    def read(self, count: int):
+    def read(self, count: int) -> bytes:
         if self._channel is None:
             raise IOError("CryptoChannel is closed")
         buffer = ctypes.c_buffer(count)
@@ -167,6 +167,20 @@ class CryptoChannel:
             raise IOError("CryptoChannel underlying fd cannot be nonblocking")
         elif status != CHANNEL_SUCCESS:
             raise IOError("CryptoChannel write failed")
+
+    def read_str(self) -> str:
+        message_length = int.from_bytes(self.read(4), 'big', signed=False)
+        return self.read(message_length).decode('utf-8')
+
+    def write_str(self, message: str):
+        data = message.encode('utf-8')
+        self.write(len(data).to_bytes(4, 'big', signed=False))
+        self.write(data)
+
+    recv = read
+    send = write
+    recv_str = read_str
+    send_str = write_str
 
 
 class AsyncCryptoChannel(CryptoChannel):
@@ -249,7 +263,7 @@ class AsyncCryptoChannel(CryptoChannel):
         # Wait for future result
         await crypto_connect_future
 
-    async def read(self, count: int):
+    async def read(self, count: int) -> bytes:
         # Begin read
         crypto_read_buffer = ctypes.c_buffer(count)
         status = _crypto_channel_read(self._channel, crypto_read_buffer, count)
@@ -285,6 +299,20 @@ class AsyncCryptoChannel(CryptoChannel):
 
         # Wait for future result
         return await crypto_write_future
+
+    async def read_str(self) -> str:
+        message_length = int.from_bytes(await self.read(4), 'big', signed=False)
+        return await self.read(message_length).decode('utf-8')
+
+    async def write_str(self, message: str):
+        data = message.encode('utf-8')
+        await self.write(len(data).to_bytes(4, 'big', signed=False))
+        await self.write(data)
+
+    recv = read
+    send = write
+    recv_str = read_str
+    send_str = write_str
 
 
 def connect(host: str, port: int,
