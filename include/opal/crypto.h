@@ -41,47 +41,17 @@ typedef struct crypto_channel_t {
     public_key_t remote_public_key;
     uint8_t shared_key[crypto_box_BEFORENMBYTES];
     // Plaintext Buffer
-    struct {
-        uint8_t plaintext_zeroes[crypto_box_ZEROBYTES];
-        union {
-            // Size 0 arrays are forbidden by ISO C
-            uint8_t plaintext[1];
-            uint8_t plaintext_data[CRYPTO_PACKET_MAX];
-            public_key_t temporary_public_key_buffer;
-        };
-    } __attribute__((packed));
+    union {
+        uint8_t plaintext[CRYPTO_PACKET_MAX];
+        public_key_t temporary_public_key_buffer;
+    };
     size_t plaintext_length;
     // Ciphertext Buffer
     struct {
-        union {
-#if crypto_box_NONCEBYTES + CRYPTO_LENGTH_BYTES > crypto_box_BOXZEROBYTES
-            struct {
-                union {
-                    // Size 0 arrays are forbidden by ISO C
-                    uint8_t ciphertext[1];
-                    uint16_t ciphertext_network_length;
-                };
-                uint8_t ciphertext_nonce[crypto_box_NONCEBYTES];
-            } __attribute__((packed));
-            struct {
-                uint8_t ciphertext_padding[(crypto_box_NONCEBYTES + CRYPTO_LENGTH_BYTES) - crypto_box_BOXZEROBYTES];
-                uint8_t ciphertext_zeroes[crypto_box_BOXZEROBYTES];
-            } __attribute__((packed));
-#else
-            uint8_t ciphertext_zeroes[crypto_box_BOXZEROBYTES];
-            struct {
-                uint8_t ciphertext_padding[crypto_box_BOXZEROBYTES - (crypto_box_NONCEBYTES + CRYPTO_LENGTH_BYTES)];
-                struct {
-                    union {
-                        uint8_t ciphertext[1];
-                        uint16_t ciphertext_network_length;
-                    };
-                    uint8_t ciphertext_nonce[crypto_box_NONCEBYTES];
-                } __attribute__((packed));
-            } __attribute__((packed));
-#endif
-        };
-        uint8_t ciphertext_data[CRYPTO_PACKET_MAX];
+        uint8_t ciphertext[0];
+        uint16_t ciphertext_network_length;
+        uint8_t ciphertext_nonce[crypto_box_NONCEBYTES];
+        uint8_t ciphertext_data[CRYPTO_PACKET_MAX + crypto_box_MACBYTES];
     } __attribute__((packed));
     size_t ciphertext_length;
     size_t ciphertext_processed;

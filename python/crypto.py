@@ -12,11 +12,11 @@ CHANNEL_WRITE_WAIT = -3
 
 # Types
 private_key_t = ctypes.c_ubyte * 32
-private_key_p = ctypes.POINTER(private_key_t)
+private_key_p = ctypes.c_void_p
 public_key_t = ctypes.c_ubyte * 32
-public_key_p = ctypes.POINTER(private_key_t)
+public_key_p = ctypes.c_void_p
 crypto_channel_p = ctypes.c_void_p
-buffer_p = ctypes.POINTER(ctypes.c_ubyte)
+buffer_p = ctypes.c_void_p
 
 
 # C Functions
@@ -103,9 +103,9 @@ class CryptoChannel:
             self.private_key = private_key
             self.public_key = public_key
         # Validate key lengths
-        if len(private_key) != private_key_t._length_:
+        if len(self.private_key) != private_key_t._length_:
             raise TypeError("local key must be {} bytes".format(private_key_t._length_))
-        if len(public_key) != public_key_t._length_:
+        if len(self.public_key) != public_key_t._length_:
             raise TypeError("remote key must be {} bytes".format(public_key_t._length_))
         # Overwrite _channel and fd
         if hasattr(fd, 'fileno'):

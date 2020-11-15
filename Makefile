@@ -4,7 +4,7 @@ SOURCES := $(wildcard src/*.c)
 INCLUDES := $(wildcard include/$(LIBNAME)/*.h)
 PYTHON_LIBS := $(wildcard python/*.py)
 DEPS := -lpthread -lcjson -lsodium
-C_FLAGS := -fpic -shared -Wall -Wextra -Wpedantic
+C_FLAGS := -fpic -shared -Wall -Wextra
 CPP_FLAGS :=
 
 INSTALLED_SO := /usr/lib/lib$(SO)

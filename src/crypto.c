@@ -25,46 +25,58 @@ void __attribute__((constructor)) crypto_channel_constructor(void)
 // Static functions
 static void crypto_channel_encrypt_chunk(crypto_channel_t *channel)
 {
-    // Zero the necessary prefix bytes
-    bzero(channel->plaintext_zeroes, crypto_box_ZEROBYTES);
     // Generate a nonce
-    uint8_t nonce[crypto_box_NONCEBYTES];
-    randombytes_buf(nonce, crypto_box_NONCEBYTES);
+    randombytes_buf(channel->ciphertext_nonce, crypto_box_NONCEBYTES);
     // Encrypt the plaintext, storing it into channel->ciphertext_data
-    crypto_box_afternm(
-        channel->ciphertext_zeroes,
-        channel->plaintext_zeroes,
-        crypto_box_ZEROBYTES + channel->plaintext_length,
-        nonce,
+    crypto_box_easy_afternm(
+        channel->ciphertext_data,
+        channel->plaintext,
+        channel->plaintext_length,
+        channel->ciphertext_nonce,
         channel->shared_key
     );
     // Store the ciphertext network length
     channel->ciphertext_network_length = htobe16(channel->plaintext_length);
-    // Store the ciphertext nonce
-    memcpy(channel->ciphertext_nonce, nonce, crypto_box_NONCEBYTES);
     // Store ciphertext size and zero processed bytes
-    channel->ciphertext_length = channel->plaintext_length + CRYPTO_HEADER_SIZE;
+    channel->ciphertext_length = channel->plaintext_length + (crypto_box_MACBYTES + CRYPTO_HEADER_SIZE);
     channel->ciphertext_processed = 0;
+    #ifdef VERBOSE_DEBUG
+    opal_debug_info("Encrypted to ciphertext (%02x%02x...%02x%02x) using nonce (%02x%02x...%02x%02x)",
+            channel->ciphertext_data[0],
+            channel->ciphertext_data[1],
+            channel->ciphertext_data[channel->ciphertext_length - CRYPTO_HEADER_SIZE - 2],
+            channel->ciphertext_data[channel->ciphertext_length - CRYPTO_HEADER_SIZE - 1],
+            channel->ciphertext_nonce[0],
+            channel->ciphertext_nonce[1],
+            channel->ciphertext_nonce[crypto_box_NONCEBYTES - 2],
+            channel->ciphertext_nonce[crypto_box_NONCEBYTES - 1]);
+    #endif
 }
 
 
 static int crypto_channel_decrypt_chunk(crypto_channel_t *channel)
 {
-    // Retreive the nonce from the buffer
-    uint8_t nonce[crypto_box_NONCEBYTES];
-    memcpy(nonce, channel->ciphertext_nonce, crypto_box_NONCEBYTES);
-    // Zero the necessary prefix bytes (erasing nonce and network length)
-    bzero(channel->ciphertext_zeroes, crypto_box_ZEROBYTES);
+    #ifdef VERBOSE_DEBUG
+    opal_debug_info("Decrypting ciphertext (%02x%02x...%02x%02x) using nonce (%02x%02x...%02x%02x)",
+            channel->ciphertext_data[0],
+            channel->ciphertext_data[1],
+            channel->ciphertext_data[channel->ciphertext_length - CRYPTO_HEADER_SIZE - 2],
+            channel->ciphertext_data[channel->ciphertext_length - CRYPTO_HEADER_SIZE - 1],
+            channel->ciphertext_nonce[0],
+            channel->ciphertext_nonce[1],
+            channel->ciphertext_nonce[crypto_box_NONCEBYTES - 2],
+            channel->ciphertext_nonce[crypto_box_NONCEBYTES - 1]);
+    #endif
     // Perform decryption, putting data into channel->plaintext
-    int status = crypto_box_open_afternm(
-        channel->plaintext_zeroes,
-        channel->ciphertext_zeroes,
-        crypto_box_ZEROBYTES + channel->ciphertext_length - CRYPTO_HEADER_SIZE,
-        nonce,
+    int status = crypto_box_open_easy_afternm(
+        channel->plaintext,
+        channel->ciphertext_data,
+        channel->ciphertext_length - CRYPTO_HEADER_SIZE,
+        channel->ciphertext_nonce,
         channel->shared_key
     );
-    // Store plaintext size and zero processed bytes
-    channel->plaintext_length = channel->ciphertext_length - CRYPTO_HEADER_SIZE;
+    // Store plaintext size
+    channel->plaintext_length = channel->ciphertext_length - (CRYPTO_HEADER_SIZE + crypto_box_MACBYTES);
     return status;
 }
 
@@ -97,7 +109,7 @@ static int crypto_channel_receive_chunk(crypto_channel_t *channel)
             channel->ciphertext_processed += bytes_read;
             if (channel->ciphertext_processed > CRYPTO_LENGTH_BYTES)
             {
-                channel->ciphertext_length = be16toh(channel->ciphertext_network_length) + CRYPTO_HEADER_SIZE;
+                channel->ciphertext_length = be16toh(channel->ciphertext_network_length) + CRYPTO_HEADER_SIZE + crypto_box_MACBYTES;
             }
         }
     }
@@ -150,11 +162,15 @@ static int crypto_channel_write_continue(crypto_channel_t *channel)
             return status;
         }
         channel->write_processed += channel->plaintext_length;
+        if (channel->write_processed == channel->write_total)
+        {
+            break;
+        }
 
         // Determine a size for the next chunk
-        channel->plaintext_length = MAX(channel->write_total - channel->write_processed, CRYPTO_PACKET_MAX);
+        channel->plaintext_length = MIN(channel->write_total - channel->write_processed, CRYPTO_PACKET_MAX);
         // Move the chunk into the plaintext buffer
-        memcpy(channel->plaintext_data, channel->write_buffer + channel->write_processed, channel->plaintext_length);
+        memcpy(channel->plaintext, channel->write_buffer + channel->write_processed, channel->plaintext_length);
         // Encrypt the chunk
         crypto_channel_encrypt_chunk(channel);
     }
@@ -197,6 +213,7 @@ static int crypto_channel_read_continue(crypto_channel_t *channel)
         status = crypto_channel_decrypt_chunk(channel);
         if (status == -1)
         {
+            opal_debug_error("decryption failed on incoming message");
             return CHANNEL_ERROR;
         }
 
