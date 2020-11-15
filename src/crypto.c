@@ -377,8 +377,20 @@ void crypto_channel_init(crypto_channel_t *channel, int fd, const void *private_
     channel->operation = NO_OP;
     channel->unread_data_start = 0;
     channel->unread_data_end = 0;
-    memcpy(channel->private_key, private_key, sizeof(private_key_t));
-    memcpy(channel->local_public_key, public_key, sizeof(public_key_t));
+    if (private_key == NULL)
+    {
+        crypto_generate_keys(channel->local_public_key, channel->private_key);
+    }
+    else if (public_key == NULL)
+    {
+        memcpy(channel->private_key, private_key, sizeof(private_key_t));
+        crypto_generate_public_key(channel->local_public_key, private_key);
+    }
+    else
+    {
+        memcpy(channel->private_key, private_key, sizeof(private_key_t));
+        memcpy(channel->local_public_key, public_key, sizeof(public_key_t));
+    }
 }
 
 

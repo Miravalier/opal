@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 import ctypes
+from enum import Enum
 from . import dll
 
 
 # Constants
-CHANNEL_SUCCESS = 0
-CHANNEL_ERROR = -1
-CHANNEL_READ_WAIT = -2
-CHANNEL_WRITE_WAIT = -3
+class ChannelStatus(Enum):
+    SUCCESS = 0
+    ERROR = -1
+    READ_WAIT = -2
+    WRITE_WAIT = -3
 
 
 # Types
@@ -82,6 +84,10 @@ def generate_public_key(private_key: bytes) -> bytes:
     """
     @return A public key generated using the private key.
     """
+    # Validate key length
+    if len(private_key) != private_key_t._length_:
+        raise TypeError("private key must be {} bytes".format(private_key_t._length_))
+    # Generate public key
     public_key = public_key_t()
     _crypto_generate_public_key(public_key, private_key)
     return bytes(public_key)
@@ -104,9 +110,9 @@ class CryptoChannel:
             self.public_key = public_key
         # Validate key lengths
         if len(self.private_key) != private_key_t._length_:
-            raise TypeError("local key must be {} bytes".format(private_key_t._length_))
+            raise TypeError("private key must be {} bytes".format(private_key_t._length_))
         if len(self.public_key) != public_key_t._length_:
-            raise TypeError("remote key must be {} bytes".format(public_key_t._length_))
+            raise TypeError("public key must be {} bytes".format(public_key_t._length_))
         # Overwrite _channel and fd
         if hasattr(fd, 'fileno'):
             self.fd_owner = fd
@@ -142,30 +148,34 @@ class CryptoChannel:
             self.fd_owner = None
     
     def connect(self, remote_public_key: bytes = None):
-        status = _crypto_channel_connect(self._channel, remote_public_key)
-        if status == CHANNEL_ERROR:
+        # Validate key length
+        if remote_public_key is not None and len(remote_public_key) != public_key_t._length_:
+            raise TypeError("remote public key must be {} bytes, or None".format(public_key_t._length_))
+        # Perform connect
+        status = ChannelStatus(_crypto_channel_connect(self._channel, remote_public_key))
+        if status == ChannelStatus.ERROR:
             raise IOError("CryptoChannel failed to exchange keys")
-        elif status == CHANNEL_READ_WAIT or status == CHANNEL_WRITE_WAIT:
+        elif status == ChannelStatus.READ_WAIT or status == ChannelStatus.WRITE_WAIT:
             raise IOError("CryptoChannel underlying fd cannot be nonblocking")
     
     def read(self, count: int) -> bytes:
         if self._channel is None:
             raise IOError("CryptoChannel is closed")
         buffer = ctypes.c_buffer(count)
-        status = _crypto_channel_read(self._channel, buffer, count)
-        if status == CHANNEL_READ_WAIT:
+        status = ChannelStatus(_crypto_channel_read(self._channel, buffer, count))
+        if status == ChannelStatus.READ_WAIT:
             raise IOError("CryptoChannel underlying fd cannot be nonblocking")
-        elif status != CHANNEL_SUCCESS:
+        elif status != ChannelStatus.SUCCESS:
             raise IOError("CryptoChannel read failed")
         return bytes(buffer)
     
     def write(self, data: bytes):
         if self._channel is None:
             raise IOError("CryptoChannel is closed")
-        status = _crypto_channel_write(self._channel, data, len(data))
-        if status == CHANNEL_WRITE_WAIT:
+        status = ChannelStatus(_crypto_channel_write(self._channel, data, len(data)))
+        if status == ChannelStatus.WRITE_WAIT:
             raise IOError("CryptoChannel underlying fd cannot be nonblocking")
-        elif status != CHANNEL_SUCCESS:
+        elif status != ChannelStatus.SUCCESS:
             raise IOError("CryptoChannel write failed")
 
     def read_str(self) -> str:
@@ -187,17 +197,17 @@ class AsyncCryptoChannel(CryptoChannel):
     def _connect_read_continue(self, future):
         # Attempt to continue
         loop = asyncio.get_running_loop()
-        status = _crypto_channel_continue(self._channel)
+        status = ChannelStatus(_crypto_channel_continue(self._channel))
         # If the connection is complete, set the future to done
-        if status == CHANNEL_SUCCESS:
+        if status == ChannelStatus.SUCCESS:
             loop.remove_reader(self.fd)
             future.set_result(None)
         # If the connection failed, raise an exception
-        elif status == CHANNEL_ERROR:
+        elif status == ChannelStatus.ERROR:
             loop.remove_reader(self.fd)
             future.set_exception(IOError("AsyncCryptoChannel key exchange failed"))
         # If the connect is waiting to write, switch watcher type
-        elif status == CHANNEL_WRITE_WAIT:
+        elif status == ChannelStatus.WRITE_WAIT:
             loop.remove_reader(self.fd)
             loop.add_writer(self.fd, self._connect_write_continue, future)
         # If the connect is waiting to read, let the callback run again
@@ -207,17 +217,17 @@ class AsyncCryptoChannel(CryptoChannel):
     def _connect_write_continue(self, future):
         # Attempt to continue
         loop = asyncio.get_running_loop()
-        status = _crypto_channel_continue(self._channel)
+        status = ChannelStatus(_crypto_channel_continue(self._channel))
         # If the connection is complete, set the future to done
-        if status == CHANNEL_SUCCESS:
+        if status == ChannelStatus.SUCCESS:
             loop.remove_writer(self.fd)
             future.set_result(None)
         # If the connection failed, raise an exception
-        elif status == CHANNEL_ERROR:
+        elif status == ChannelStatus.ERROR:
             loop.remove_writer(self.fd)
             future.set_exception(IOError("AsyncCryptoChannel key exchange failed"))
         # If the connect is waiting to read, switch watcher type
-        elif status == CHANNEL_READ_WAIT:
+        elif status == ChannelStatus.READ_WAIT:
             loop.remove_writer(self.fd)
             loop.add_reader(self.fd, self._connect_read_continue, future)
         # If the connect is waiting to write, let the callback run again
@@ -225,29 +235,33 @@ class AsyncCryptoChannel(CryptoChannel):
             pass
 
     def _read_continue(self, future, buffer):
-        status = _crypto_channel_continue(self._channel)
-        if status == CHANNEL_SUCCESS:
+        status = ChannelStatus(_crypto_channel_continue(self._channel))
+        if status == ChannelStatus.SUCCESS:
             asyncio.get_running_loop().remove_reader(self.fd)
             future.set_result(bytes(buffer))
-        elif status == CHANNEL_ERROR:
+        elif status == ChannelStatus.ERROR:
             asyncio.get_running_loop().remove_reader(self.fd)
             future.set_exception(IOError("AsyncCryptoChannel read failed"))
 
     def _write_continue(self, future):
-        status = _crypto_channel_continue(self._channel)
-        if status == CHANNEL_SUCCESS:
+        status = ChannelStatus(_crypto_channel_continue(self._channel))
+        if status == ChannelStatus.SUCCESS:
             asyncio.get_running_loop().remove_writer(self.fd)
             future.set_result(None)
-        elif status == CHANNEL_ERROR:
+        elif status == ChannelStatus.ERROR:
             asyncio.get_running_loop().remove_writer(self.fd)
             future.set_exception(IOError("AsyncCryptoChannel write failed"))
 
     async def connect(self, remote_public_key: bytes = None):
+        # Validate key length
+        if len(remote_public_key) != public_key_t._length_:
+            raise TypeError("remote public key must be {} bytes".format(public_key_t._length_))
+        
         # Begin connect
-        status = _crypto_channel_connect(self._channel, remote_public_key)
-        if status == CHANNEL_ERROR:
+        status = ChannelStatus(_crypto_channel_connect(self._channel, remote_public_key))
+        if status == ChannelStatus.ERROR:
             raise IOError("CryptoChannel failed to exchange keys")
-        elif status == CHANNEL_SUCCESS:
+        elif status == ChannelStatus.SUCCESS:
             return
 
         # Create future object
@@ -255,9 +269,9 @@ class AsyncCryptoChannel(CryptoChannel):
         crypto_connect_future = loop.create_future()
 
         # Wait until the fd is readable/writeable to call continue
-        if status == CHANNEL_READ_WAIT:
+        if status == ChannelStatus.READ_WAIT:
             loop.add_reader(self.fd, self._connect_read_continue, crypto_connect_future)
-        elif status == CHANNEL_WRITE_WAIT:
+        elif status == ChannelStatus.WRITE_WAIT:
             loop.add_writer(self.fd, self._connect_write_continue, crypto_connect_future)
 
         # Wait for future result
@@ -266,10 +280,10 @@ class AsyncCryptoChannel(CryptoChannel):
     async def read(self, count: int) -> bytes:
         # Begin read
         crypto_read_buffer = ctypes.c_buffer(count)
-        status = _crypto_channel_read(self._channel, crypto_read_buffer, count)
-        if status == CHANNEL_SUCCESS:
+        status = ChannelStatus(_crypto_channel_read(self._channel, crypto_read_buffer, count))
+        if status == ChannelStatus.SUCCESS:
             return bytes(crypto_read_buffer)
-        elif status == CHANNEL_ERROR:
+        elif status == ChannelStatus.ERROR:
             raise IOError("AsyncCryptoChannel read failed")
 
         # Create future object
@@ -284,10 +298,10 @@ class AsyncCryptoChannel(CryptoChannel):
 
     async def write(self, data: bytes):
         # Begin write
-        status = _crypto_channel_write(self._channel, data, len(data))
-        if status == CHANNEL_SUCCESS:
+        status = ChannelStatus(_crypto_channel_write(self._channel, data, len(data)))
+        if status == ChannelStatus.SUCCESS:
             return
-        elif status == CHANNEL_ERROR:
+        elif status == ChannelStatus.ERROR:
             raise IOError("AsyncCryptoChannel write failed")
 
         # Create future object
