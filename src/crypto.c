@@ -4,9 +4,20 @@
 #include <string.h>
 #include <sys/param.h>
 #include <sys/socket.h>
+#include <fcntl.h>
+#include <sodium.h>
 
-#include <nacl/randombytes.h>
 #include "opal/crypto.h"
+#include "opal/debug.h"
+
+// Constructor
+void __attribute__((constructor)) crypto_channel_constructor(void)
+{
+    if (sodium_init() == -1)
+    {
+        opal_error("failed to initialize libsodium");
+    }
+}
 
 
 // Static functions
@@ -16,7 +27,7 @@ static void crypto_channel_encrypt_chunk(crypto_channel_t *channel)
     bzero(channel->plaintext_zeroes, crypto_box_ZEROBYTES);
     // Generate a nonce
     uint8_t nonce[crypto_box_NONCEBYTES];
-    randombytes(nonce, crypto_box_NONCEBYTES);
+    randombytes_buf(nonce, crypto_box_NONCEBYTES);
     // Encrypt the plaintext, storing it into channel->ciphertext_data
     crypto_box_afternm(
         channel->ciphertext_zeroes,
@@ -28,7 +39,7 @@ static void crypto_channel_encrypt_chunk(crypto_channel_t *channel)
     // Store the ciphertext network length
     channel->ciphertext_network_length = htobe16(channel->plaintext_length);
     // Store the ciphertext nonce
-    memcpy(channel->ciphertext_nonce, nonce, crypto_secretbox_NONCEBYTES);
+    memcpy(channel->ciphertext_nonce, nonce, crypto_box_NONCEBYTES);
     // Store ciphertext size and zero processed bytes
     channel->ciphertext_length = channel->plaintext_length + CRYPTO_HEADER_SIZE;
     channel->ciphertext_processed = 0;
@@ -38,15 +49,15 @@ static void crypto_channel_encrypt_chunk(crypto_channel_t *channel)
 static int crypto_channel_decrypt_chunk(crypto_channel_t *channel)
 {
     // Retreive the nonce from the buffer
-    uint8_t nonce[crypto_secretbox_NONCEBYTES];
-    memcpy(nonce, channel->ciphertext_nonce, crypto_secretbox_NONCEBYTES);
+    uint8_t nonce[crypto_box_NONCEBYTES];
+    memcpy(nonce, channel->ciphertext_nonce, crypto_box_NONCEBYTES);
     // Zero the necessary prefix bytes (erasing nonce and network length)
-    bzero(channel->ciphertext_zeroes, crypto_secretbox_ZEROBYTES);
+    bzero(channel->ciphertext_zeroes, crypto_box_ZEROBYTES);
     // Perform decryption, putting data into channel->plaintext
     int status = crypto_box_open_afternm(
         channel->plaintext_zeroes,
         channel->ciphertext_zeroes,
-        crypto_secretbox_ZEROBYTES + channel->ciphertext_length - CRYPTO_HEADER_SIZE,
+        crypto_box_ZEROBYTES + channel->ciphertext_length - CRYPTO_HEADER_SIZE,
         nonce,
         channel->key
     );
@@ -215,18 +226,53 @@ void crypto_generate_keys(remote_key_t *remote, local_key_t *local)
 }
 
 
+crypto_channel_t *crypto_channel_new(int fd, const local_key_t *local_key, const remote_key_t *remote_key)
+{
+    crypto_channel_t *channel = malloc(sizeof(crypto_channel_t));
+    if (channel == NULL)
+    {
+        return NULL;
+    }
+    crypto_channel_init(channel, fd, local_key, remote_key);
+    return channel;
+}
+
+
+void crypto_channel_free(crypto_channel_t *channel)
+{
+    if (channel != NULL)
+    {
+        crypto_channel_fini(channel);
+        free(channel);
+    }
+}
+
+
 void crypto_channel_init(crypto_channel_t *channel, int fd, const local_key_t *local_key, const remote_key_t *remote_key)
 {
     channel->fd = fd;
     channel->operation = NO_OP;
     channel->unread_data_start = 0;
     channel->unread_data_end = 0;
-    crypto_box_beforenm(channel->key, (void*)remote_key, (void*)local_key);
+    if (crypto_box_beforenm(channel->key, (void*)remote_key, (void*)local_key) != 0)
+    {
+        opal_error("failed to create shared key during crypto channel initialization");
+    }
+}
+
+
+void crypto_channel_fini(crypto_channel_t *channel)
+{
+    (void)channel;
 }
 
 
 int crypto_channel_write(crypto_channel_t *channel, const void *buffer, size_t bytes)
 {
+    if (channel == NULL)
+    {
+        return CHANNEL_ERROR;
+    }
     // Prepare for writing
     channel->write_buffer = buffer;
     channel->write_total = bytes;
@@ -242,6 +288,10 @@ int crypto_channel_write(crypto_channel_t *channel, const void *buffer, size_t b
 
 int crypto_channel_read(crypto_channel_t *channel, void *buffer, size_t bytes)
 {
+    if (channel == NULL)
+    {
+        return CHANNEL_ERROR;
+    }
     // Prepare for reading
     channel->read_buffer = buffer;
     channel->read_total = bytes;
@@ -257,6 +307,10 @@ int crypto_channel_read(crypto_channel_t *channel, void *buffer, size_t bytes)
 
 int crypto_channel_continue(crypto_channel_t *channel)
 {
+    if (channel == NULL)
+    {
+        return CHANNEL_ERROR;
+    }
     switch (channel->operation)
     {
         case READ_OP:

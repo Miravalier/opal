@@ -3,22 +3,15 @@
 
 #include <stdlib.h>
 #include <stdint.h>
-#include <nacl/crypto_box.h>
-#include <nacl/crypto_secretbox.h>
+#include <sodium.h>
 
 #define CRYPTO_PACKET_MAX       4096
 #define CRYPTO_LENGTH_BYTES     2
-#define CRYPTO_HEADER_SIZE      (crypto_secretbox_NONCEBYTES + CRYPTO_LENGTH_BYTES)
+#define CRYPTO_HEADER_SIZE      (crypto_box_NONCEBYTES + CRYPTO_LENGTH_BYTES)
 
 
 typedef uint8_t local_key_t[crypto_box_SECRETKEYBYTES];
 typedef uint8_t remote_key_t[crypto_box_PUBLICKEYBYTES];
-
-typedef enum crypto_operation_e {
-    NO_OP,
-    WRITE_OP,
-    READ_OP,
-} crypto_operation_e;
 
 typedef enum crypto_channel_status_e {
     CHANNEL_SUCCESS = 0,
@@ -26,6 +19,12 @@ typedef enum crypto_channel_status_e {
     CHANNEL_READ_WAIT = -2,
     CHANNEL_WRITE_WAIT = -3,
 } crypto_channel_status_e;
+
+typedef enum crypto_operation_e {
+    NO_OP,
+    WRITE_OP,
+    READ_OP,
+} crypto_operation_e;
 
 typedef struct crypto_channel_t {
     // Underlying fd
@@ -66,7 +65,7 @@ typedef struct crypto_channel_t {
                 uint8_t ciphertext_padding[crypto_box_BOXZEROBYTES - (crypto_box_NONCEBYTES + CRYPTO_LENGTH_BYTES)];
                 struct {
                     union {
-                        uint8_t ciphertext[0];
+                        uint8_t ciphertext[1];
                         uint16_t ciphertext_network_length;
                     };
                     uint8_t ciphertext_nonce[crypto_box_NONCEBYTES];
@@ -102,13 +101,40 @@ typedef struct crypto_channel_t {
 /**
  * @brief   Generates the local and remote side of a key.
  */
-void crypto_generate_keys(local_key_t *local, remote_key_t *remote);
+void crypto_generate_keys(remote_key_t *remote, local_key_t *local);
+
+
+/**
+ * @brief   Allocates memory for and returns a crypto_channel_t. The returned channel
+ *          must be freed by the caller.
+ */
+crypto_channel_t *crypto_channel_new(int fd, const local_key_t *local_key, const remote_key_t *remote_key);
+
+
+/**
+ * @brief   Releases the resources associated with a crypto_channel_t returned from
+ *          crypto_channel_new() and deallocates the memory.
+ * 
+ * @warning Does NOT close or do anything to the underlying fd.
+ */
+void crypto_channel_free(crypto_channel_t *channel);
+
 
 /**
  * @brief   Prepares a channel for writing and reading by setting its underlying fd and
  *          key material.
  */
 void crypto_channel_init(crypto_channel_t *channel, int fd, const local_key_t *local_key, const remote_key_t *remote_key);
+
+
+/**
+ * @brief   Releases resources associated with a channel initialized with crypto_channel_init(),
+ *          currently does nothing.
+ * 
+ * @warning Does NOT close or do anything to the underlying fd.
+ */
+void crypto_channel_fini(crypto_channel_t *channel);
+
 
 /**
  * @brief   If the channel is blocking, returns 0 when the entire message has been
