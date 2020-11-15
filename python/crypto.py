@@ -40,7 +40,7 @@ _crypto_channel_init = dll.crypto_channel_init
 _crypto_channel_init.restype = None
 _crypto_channel_init.argtypes = (crypto_channel_p, ctypes.c_int, private_key_p, public_key_p)
 
-_crypto_channel_connect = dll.crypto_channel_init
+_crypto_channel_connect = dll.crypto_channel_connect
 _crypto_channel_connect.restype = ctypes.c_int
 _crypto_channel_connect.argtypes = (crypto_channel_p, public_key_p)
 
@@ -114,7 +114,7 @@ class CryptoChannel:
         else:
             self.fd_owner = self
             self.fd = fd
-        self._channel = _crypto_channel_new(self.fd, private_key, public_key)
+        self._channel = _crypto_channel_new(self.fd, self.private_key, self.public_key)
 
     def __del__(self):
         self.close()
@@ -141,6 +141,13 @@ class CryptoChannel:
             self.fd = None
             self.fd_owner = None
     
+    def connect(self, remote_public_key: bytes = None):
+        status = _crypto_channel_connect(self._channel, remote_public_key)
+        if status == CHANNEL_ERROR:
+            raise IOError("CryptoChannel failed to exchange keys")
+        elif status == CHANNEL_READ_WAIT or status == CHANNEL_WRITE_WAIT:
+            raise IOError("CryptoChannel underlying fd cannot be nonblocking")
+    
     def read(self, count: int):
         if self._channel is None:
             raise IOError("CryptoChannel is closed")
@@ -163,6 +170,46 @@ class CryptoChannel:
 
 
 class AsyncCryptoChannel(CryptoChannel):
+    def _connect_read_continue(self, future):
+        # Attempt to continue
+        loop = asyncio.get_running_loop()
+        status = _crypto_channel_continue(self._channel)
+        # If the connection is complete, set the future to done
+        if status == CHANNEL_SUCCESS:
+            loop.remove_reader(self.fd)
+            future.set_result(None)
+        # If the connection failed, raise an exception
+        elif status == CHANNEL_ERROR:
+            loop.remove_reader(self.fd)
+            future.set_exception(IOError("AsyncCryptoChannel key exchange failed"))
+        # If the connect is waiting to write, switch watcher type
+        elif status == CHANNEL_WRITE_WAIT:
+            loop.remove_reader(self.fd)
+            loop.add_writer(self.fd, self._connect_write_continue, future)
+        # If the connect is waiting to read, let the callback run again
+        else:
+            pass
+
+    def _connect_write_continue(self, future):
+        # Attempt to continue
+        loop = asyncio.get_running_loop()
+        status = _crypto_channel_continue(self._channel)
+        # If the connection is complete, set the future to done
+        if status == CHANNEL_SUCCESS:
+            loop.remove_writer(self.fd)
+            future.set_result(None)
+        # If the connection failed, raise an exception
+        elif status == CHANNEL_ERROR:
+            loop.remove_writer(self.fd)
+            future.set_exception(IOError("AsyncCryptoChannel key exchange failed"))
+        # If the connect is waiting to read, switch watcher type
+        elif status == CHANNEL_READ_WAIT:
+            loop.remove_writer(self.fd)
+            loop.add_reader(self.fd, self._connect_read_continue, future)
+        # If the connect is waiting to write, let the callback run again
+        else:
+            pass
+
     def _read_continue(self, future, buffer):
         status = _crypto_channel_continue(self._channel)
         if status == CHANNEL_SUCCESS:
@@ -181,11 +228,28 @@ class AsyncCryptoChannel(CryptoChannel):
             asyncio.get_running_loop().remove_writer(self.fd)
             future.set_exception(IOError("AsyncCryptoChannel write failed"))
 
-    async def read(self, count: int):
+    async def connect(self, remote_public_key: bytes = None):
+        # Begin connect
+        status = _crypto_channel_connect(self._channel, remote_public_key)
+        if status == CHANNEL_ERROR:
+            raise IOError("CryptoChannel failed to exchange keys")
+        elif status == CHANNEL_SUCCESS:
+            return
+
         # Create future object
         loop = asyncio.get_running_loop()
-        crypto_read_future = loop.create_future()
+        crypto_connect_future = loop.create_future()
 
+        # Wait until the fd is readable/writeable to call continue
+        if status == CHANNEL_READ_WAIT:
+            loop.add_reader(self.fd, self._connect_read_continue, crypto_connect_future)
+        elif status == CHANNEL_WRITE_WAIT:
+            loop.add_writer(self.fd, self._connect_write_continue, crypto_connect_future)
+
+        # Wait for future result
+        await crypto_connect_future
+
+    async def read(self, count: int):
         # Begin read
         crypto_read_buffer = ctypes.c_buffer(count)
         status = _crypto_channel_read(self._channel, crypto_read_buffer, count)
@@ -194,6 +258,10 @@ class AsyncCryptoChannel(CryptoChannel):
         elif status == CHANNEL_ERROR:
             raise IOError("AsyncCryptoChannel read failed")
 
+        # Create future object
+        loop = asyncio.get_running_loop()
+        crypto_read_future = loop.create_future()
+
         # Wait until the fd is readable to call continue
         loop.add_reader(self.fd, self._read_continue, crypto_read_future, crypto_read_buffer)
 
@@ -201,19 +269,66 @@ class AsyncCryptoChannel(CryptoChannel):
         return await crypto_read_future
 
     async def write(self, data: bytes):
-        # Create future object
-        loop = asyncio.get_running_loop()
-        crypto_write_future = loop.create_future()
-
         # Begin write
         status = _crypto_channel_write(self._channel, data, len(data))
         if status == CHANNEL_SUCCESS:
             return
         elif status == CHANNEL_ERROR:
             raise IOError("AsyncCryptoChannel write failed")
+
+        # Create future object
+        loop = asyncio.get_running_loop()
+        crypto_write_future = loop.create_future()
         
         # Wait until the fd is writeable to call continue
         loop.add_writer(self.fd, self._write_continue, crypto_write_future)
 
         # Wait for future result
         return await crypto_write_future
+
+
+def connect(host: str, port: int,
+            *,
+            private_key: bytes = None,
+            local_public_key: bytes = None,
+            remote_public_key: bytes = None):
+    sock = socket.socket()
+    sock.connect((host, port))
+    channel = CryptoChannel(sock, private_key, local_public_key)
+    channel.connect(remote_public_key)
+    return channel
+
+
+def wrap_socket(sock,
+                *,
+                private_key: bytes = None,
+                local_public_key: bytes = None,
+                remote_public_key: bytes = None):
+    channel = CryptoChannel(sock, private_key, local_public_key)
+    channel.connect(remote_public_key)
+    return channel
+
+
+async def async_connect(host: str, port: int,
+                        *,
+                        private_key: bytes = None,
+                        local_public_key: bytes = None,
+                        remote_public_key: bytes = None):
+    loop = asyncio.get_running_loop()
+    sock = socket.socket()
+    sock.setblocking(False)
+    await loop.sock_connect(sock, (host, port))
+    channel = AsyncCryptoChannel(sock, private_key, local_public_key)
+    await channel.connect(remote_public_key)
+    return channel
+
+
+async def async_wrap_socket(sock,
+                            *,
+                            private_key: bytes = None,
+                            local_public_key: bytes = None,
+                            remote_public_key: bytes = None):
+    sock.setblocking(False)
+    channel = AsyncCryptoChannel(sock, private_key, local_public_key)
+    await channel.connect(remote_public_key)
+    return channel

@@ -5,6 +5,7 @@
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <fcntl.h>
+#include <stdbool.h>
 #include <sodium.h>
 
 #include "opal/crypto.h"
@@ -220,6 +221,104 @@ static int crypto_channel_read_continue(crypto_channel_t *channel)
 }
 
 
+static int crypto_channel_connect_read_continue(crypto_channel_t *channel)
+{
+    // Read the incoming public key until complete
+    while (channel->read_processed < sizeof(public_key_t))
+    {
+        ssize_t bytes_read = read(
+                channel->fd,
+                channel->temporary_public_key_buffer + channel->read_processed,
+                sizeof(public_key_t) - channel->read_processed);
+        if (bytes_read == 0)
+        {
+            return CHANNEL_ERROR;
+        }
+        else if (bytes_read == -1)
+        {
+            if (errno == EAGAIN)
+            {
+                return CHANNEL_READ_WAIT;
+            }
+            else
+            {
+                return CHANNEL_ERROR;
+            }
+        }
+        else
+        {
+            channel->read_processed += bytes_read;
+        }
+    }
+
+    // If key compare is on, make sure these keys match
+    if (channel->key_compare)
+    {
+        if (sodium_memcmp(
+            channel->remote_public_key,
+            channel->temporary_public_key_buffer,
+            sizeof(public_key_t)) != 0)
+        {
+            opal_error("could not validate remote public key");
+            return CHANNEL_ERROR;
+        }
+    }
+    // If key compare is off, use this key as the remote public key
+    else
+    {
+        memcpy(channel->remote_public_key,
+            channel->temporary_public_key_buffer,
+            sizeof(public_key_t));
+    }
+
+    // Derive a shared key
+    if (crypto_box_beforenm(channel->shared_key,
+        channel->remote_public_key,
+        channel->private_key) != 0)
+    {
+        opal_error("failed to generate shared key");
+        return CHANNEL_ERROR;
+    }
+
+    return CHANNEL_SUCCESS;
+}
+
+
+static int crypto_channel_connect_write_continue(crypto_channel_t *channel)
+{
+    while (channel->write_processed < sizeof(public_key_t))
+    {
+        ssize_t bytes_written = write(
+                channel->fd,
+                channel->local_public_key + channel->write_processed,
+                sizeof(public_key_t) - channel->write_processed);
+        if (bytes_written == 0)
+        {
+            return CHANNEL_ERROR;
+        }
+        else if (bytes_written == -1)
+        {
+            if (errno == EAGAIN)
+            {
+                return CHANNEL_WRITE_WAIT;
+            }
+            else
+            {
+                return CHANNEL_ERROR;
+            }
+        }
+        else
+        {
+            channel->write_processed += bytes_written;
+        }
+    }
+
+    channel->operation = CONNECT_READ_OP;
+    channel->read_processed = 0;
+    return crypto_channel_connect_read_continue(channel);
+}
+
+
 // Public functions
 void crypto_generate_keys(void *public_key, void *private_key)
 {
@@ -268,8 +367,22 @@ void crypto_channel_init(crypto_channel_t *channel, int fd, const void *private_
 
 int crypto_channel_connect(crypto_channel_t *channel, const void *remote_public_key)
 {
+    if (channel == NULL)
+    {
+        return CHANNEL_ERROR;
+    }
+    if (remote_public_key == NULL)
+    {
+        channel->key_compare = false;
+    }
+    else
+    {
+        memcpy(channel->remote_public_key, remote_public_key, sizeof(public_key_t));
+        channel->key_compare = true;
+    }
     channel->operation = CONNECT_WRITE_OP;
-    channel;
+    channel->write_processed = 0;
+    return crypto_channel_connect_write_continue(channel);
 }
 
 
@@ -330,6 +443,10 @@ int crypto_channel_continue(crypto_channel_t *channel)
             return crypto_channel_read_continue(channel);
         case WRITE_OP:
             return crypto_channel_write_continue(channel);
+        case CONNECT_READ_OP:
+            return crypto_channel_connect_read_continue(channel);
+        case CONNECT_WRITE_OP:
+            return crypto_channel_connect_write_continue(channel);
         case NO_OP:
             return CHANNEL_SUCCESS;
         default:

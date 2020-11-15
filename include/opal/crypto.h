@@ -1,6 +1,7 @@
 #ifndef _OPAL_CRYPTO_H
 #define _OPAL_CRYPTO_H
 
+#include <stdbool.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <sodium.h>
@@ -34,6 +35,7 @@ typedef struct crypto_channel_t {
     // Current operation, for nonblocking channels
     crypto_operation_e operation;
     // Key material
+    bool key_compare;
     private_key_t private_key;
     public_key_t local_public_key;
     public_key_t remote_public_key;
@@ -45,6 +47,7 @@ typedef struct crypto_channel_t {
             // Size 0 arrays are forbidden by ISO C
             uint8_t plaintext[1];
             uint8_t plaintext_data[CRYPTO_PACKET_MAX];
+            public_key_t temporary_public_key_buffer;
         };
     } __attribute__((packed));
     size_t plaintext_length;
