@@ -62,15 +62,27 @@ uint64_t pcg32_rand64(pcg32 *generator);
 
 
 /**
- * @return A random number between [0 and max).
+ * @return A random 32 bit number between [0 and max).
  */
 uint32_t pcg32_randbelow(pcg32 *generator, uint32_t max);
 
 
 /**
- * @return A random number between [min and max).
+ * @return A random 64 bit number between [0 and max).
+ */
+uint64_t pcg32_randbelow64(pcg32 *generator, uint64_t max);
+
+
+/**
+ * @return A random 32 bit number between [min and max).
  */
 uint32_t pcg32_randbetween(pcg32 *generator, uint32_t min, uint32_t max);
+
+
+/**
+ * @return A random 64 bit number between [min and max).
+ */
+uint64_t pcg32_randbetween64(pcg32 *generator, uint64_t min, uint64_t max);
 
 
 /**
